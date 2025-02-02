@@ -1,10 +1,8 @@
+import random as rn
 import numpy as np
 import torch
 import torch.nn as nn
-from PIL.ImagePalette import random
 from matplotlib import pyplot as plt
-from numpy.array_api import float32
-# from scipy.special import dtype
 from scipy.stats import spearmanr
 from sklearn.utils import shuffle
 
@@ -12,49 +10,39 @@ from sklearn.utils import shuffle
 class Agent:
     def __init__(self, bitN, m2s, s2m):
         self.bitN = bitN
-        self.m2s = m2s # meaning to signal (encoder)
-        self.s2m = s2m # sigbnal to meaning (decoder)
-        # would work like an autoencoder, feeds the output signal from m2s as an input for s2m
-        self.m2m = nn.Sequential(m2s, s2m)
+        self.m2s = m2s  # Encoder- meaning → signal
+        self.s2m = s2m  # Decoder - sibgnal → meaning
+        self.m2m = nn.Sequential(m2s, s2m)  # Autoencoder
 
 
-# create a näive state of agent
 def create_agent(bitN, nodeN):
     m2s = nn.Sequential(
-        nn.Linear(bitN, nodeN),
-        nn.Sigmoid(),
-        nn.Linear(nodeN, bitN),
-        nn.Sigmoid()
-    )
-    s2m = nn.Sequential(
-        nn.Linear(bitN, nodeN),
-        nn.Sigmoid(),
-        nn.Linear(nodeN, bitN),
-        nn.Sigmoid()
+        nn.Linear(bitN, nodeN),  # meaning → hidden
+        nn.Sigmoid(),  # activation
+        nn.Linear(nodeN, bitN)  # hidden → signal
     )
 
+    s2m = nn.Sequential(
+        nn.Linear(bitN, nodeN),  # signal → hidden
+        nn.Sigmoid(),  # activation
+        nn.Linear(nodeN, bitN)  # hidden → meaning
+    )
     return Agent(bitN, m2s, s2m)
 
 
-# helper functions : integer -> binary vectors -> integer
 def int2bin(bitN, value):
     return [int(x) for x in f"{value:0{bitN}b}"]
 
 
-def bin2ints(bin_vec):
-    return int("".join(map(str, bin_vec)), 2) #first convert and join them to a string and change it to int
+def generate_meaning_space(bitN):
+    return [torch.tensor(int2bin(bitN, i), dtype=torch.float32) for i in range(2 ** bitN)]
 
 
-# def gen_random_table(bitN):
-#     return np.random.permutation(bitN)
+def gen_supervised_data(agent, tutor, B_size, all_meanings):
+    sampled_meanings = rn.sample(all_meanings, B_size)  # Randomly select B_size meanings
 
-
-# Creating supervised dataset from tutor's encoder
-def gen_supervised_data(agent, tutor, batch_size):
     m2sdata = []
-
-    for _ in range(batch_size):
-        meaning = torch.randint(0, 2, (agent.bitN,), dtype=torch.float32)
+    for meaning in sampled_meanings:
         signal = tutor.m2s(meaning.unsqueeze(0)).detach().round().squeeze(0)
         m2sdata.append((meaning.numpy(), signal.numpy()))
 
@@ -64,57 +52,60 @@ def gen_supervised_data(agent, tutor, batch_size):
     return m2sdata, s2mdata
 
 
-# Creating unsuepervised training data...but do we need it? yes we do
-def gen_unsupervised_data(agent, batch_size):
-    data = [int2bin(agent.bitN, i) for i in range(2 ** agent.bitN)]
-    np.random.shuffle(data)
-    for i in range(0, len(data), batch_size):
-        yield data[i:i + batch_size]
+def gen_unsupervised_data(agent, A_size):
+    all_meanings = generate_meaning_space(agent.bitN)
+    return rn.sample(all_meanings, A_size)  # Randomly select A_size meanings
 
 
-# Combined supervised and unsupervised training
-def train_combined(agent, tutor, batch_size=1, epochs=10, autoencoder_iters=20):
+### --- Training Function ---
+def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs=10, autoencoder_iters=20):
     optimiser = torch.optim.SGD(
         list(agent.m2s.parameters()) + list(agent.s2m.parameters()), lr=0.01
     )
     loss_function = nn.MSELoss()
 
-    m2sdata, s2mdata = gen_supervised_data(agent, tutor, batch_size)
+    # Get supervised dataset (B_size) from tutor
+    m2sdata, s2mdata = gen_supervised_data(agent, tutor, B_size, all_meanings)
+    # unsupervised_data =
+
+    # Get unsupervised meanings (A_size)
 
     for epoch in range(epochs):
         total_loss = 0
 
-        # Supervised Training : get one data from the batch and train them
-        m2s_meaning, m2s_signal = m2sdata[epoch % batch_size]
-        s2m_meaning, s2m_signal = s2mdata[epoch % batch_size]
+        # Select `batch_size` pairs per epoch from B_size dataset
+        batch_indices = np.random.choice(len(m2sdata), B_size, replace=False)
+        batch_m2s = [m2sdata[i] for i in batch_indices]
+        batch_s2m = [s2mdata[i] for i in batch_indices]
 
-        m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32).unsqueeze(0)  # Shape (1, bitN)
-        m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32).unsqueeze(0)
+        for (m2s_meaning, m2s_signal), (s2m_meaning, s2m_signal) in zip(batch_m2s, batch_s2m):
+            m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32).unsqueeze(0)
+            m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32).unsqueeze(0)
 
-        s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float32).unsqueeze(0)  # Shape (1, bitN)
-        s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)
-
-        optimiser.zero_grad()
-
-        # Train encoder/decoder (m2s/s2m)
-        pred_m2s = agent.m2s(m2s_meaning)
-        loss_m2s = loss_function(pred_m2s, m2s_signal)
-
-        pred_s2m = agent.s2m(s2m_signal)
-        loss_s2m = loss_function(pred_s2m, s2m_meaning)
-
-        loss = loss_m2s + loss_s2m
-        loss.backward()
-        optimiser.step()
-        total_loss += loss.item()
-
-        # Unsupervised Training: 20 iterations of self-reconstruction
-        for _ in range(autoencoder_iters):
-            meanings_u = torch.randint(0, 2, (batch_size, agent.bitN), dtype=torch.float32)
+            s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float32).unsqueeze(0)
+            s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)
 
             optimiser.zero_grad()
-            pred_m2m = agent.m2m(meanings_u)
-            loss_auto = loss_function(pred_m2m, meanings_u)
+
+            # Train encoder (m2s) and decoder (s2m)
+            pred_m2s = agent.m2s(m2s_meaning)
+            loss_m2s = loss_function(pred_m2s, m2s_signal)
+
+            pred_s2m = agent.s2m(s2m_signal)
+            loss_s2m = loss_function(pred_s2m, s2m_meaning)
+
+            loss = loss_m2s + loss_s2m
+            loss.backward()
+            optimiser.step()
+            total_loss += loss.item()
+
+        # Unsupervised Training (A-size)
+        for _ in range(autoencoder_iters):
+            meanings_u = rn.sample(all_meanings, B_size)  # Select random B_size subset from A_size
+
+            optimiser.zero_grad()
+            pred_m2m = agent.m2m(torch.stack(meanings_u))
+            loss_auto = loss_function(pred_m2m, torch.stack(meanings_u))
             loss_auto.backward()
             optimiser.step()
 
@@ -123,10 +114,9 @@ def train_combined(agent, tutor, batch_size=1, epochs=10, autoencoder_iters=20):
         print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
 
 
-# Iterated Learning Process
-def iterated_learning(generations=20, bitN=8, nodeN=30, batch_size=1, epochs=10):
+def iterated_learning(generations=20, bitN=10, nodeN=10, A_size=30, B_size=100, epochs=30):
     print("\n==== Initializing first tutor (random, untrained network) ====")
-    tutor = create_agent(bitN, nodeN)  # No predefined table
+    tutor = create_agent(bitN, nodeN)
 
     stability_scores = []
     expressivity_scores = []
@@ -136,10 +126,11 @@ def iterated_learning(generations=20, bitN=8, nodeN=30, batch_size=1, epochs=10)
         print(f"\n==== Generation {gen} ====")
         pupil = create_agent(bitN, nodeN)
 
-        # Train using the defined training function
-        train_combined(pupil, tutor, batch_size, epochs)
+        # Train using separate A and B sets
+        all_meanings = generate_meaning_space(bitN)
+        train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs)
 
-        stability_scores.append(stability(tutor, pupil))
+        stability_scores.append(stability(tutor, pupil, all_meanings))
         expressivity_scores.append(expressivity(pupil))
         compositionality_scores.append(compositionality(pupil))
 
@@ -147,8 +138,6 @@ def iterated_learning(generations=20, bitN=8, nodeN=30, batch_size=1, epochs=10)
         tutor = pupil
 
     return stability_scores, expressivity_scores, compositionality_scores
-
-
 
 def plot_results(stability_scores, expressivity_scores, compositionality_scores, generations):
     plt.figure(figsize=(15, 5))
@@ -180,7 +169,7 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
     plt.tight_layout()
     plt.show()
 
-
+### --- Evaluation Metrics ---
 # Evaluation
 def calculate_entropy(p):
     if p == 0 or p == 1:
@@ -189,23 +178,34 @@ def calculate_entropy(p):
         return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
 
 
-def stability(tutor, pupil, sample_size=1000):
+def stability(tutor, pupil, all_meanings):
     tutor.m2s.eval()
-    pupil.m2s.eval()
+    pupil.s2m.eval()
 
     with torch.no_grad():
         matches = 0
-        for _ in range(sample_size):
+        for _ in range(len(all_meanings)):
             meaning = torch.randint(0, 2, (tutor.bitN,), dtype=torch.float32).unsqueeze(0)
-            tutor_signal = tuple(tutor.m2s(meaning).round().squeeze(0).numpy().astype(int))
-            pupil_signal = tuple(pupil.m2s(meaning).round().squeeze(0).numpy().astype(int))
 
-            if tutor_signal == pupil_signal:
+            # Encode meaning using the tutor
+            tutor_signal = tuple(tutor.m2s(meaning).round().squeeze(0).numpy().astype(int))
+
+            # Decode signal using the pupil
+            pupil_meaning = tuple(pupil.s2m(torch.tensor(tutor_signal, dtype=torch.float32).unsqueeze(0))
+                                  .round().squeeze(0).numpy().astype(int))
+
+            meaning_tuple = tuple(meaning.squeeze(0).numpy().astype(int))
+            print("===========----NEW----==============")
+            print(f"meaning tuple: {meaning_tuple}")
+            print(f"pupil_meaning: {pupil_meaning}")
+
+            if meaning_tuple == pupil_meaning:
                 matches += 1
 
-    stability_score = matches / sample_size
+    stability_score = matches / len(all_meanings)
     print(f"GETTING STABILITY: {stability_score:.4f}")
     return stability_score
+
 
 
 def expressivity(agent):
@@ -216,6 +216,9 @@ def expressivity(agent):
             meaning = torch.tensor(int2bin(agent.bitN, i), dtype=torch.float32).unsqueeze(0)
             signal = tuple(agent.m2s(meaning).round().squeeze(0).numpy().astype(int))
             unique_signals.add(signal)
+
+    print(len(unique_signals))
+    print(unique_signals)
 
     expressivity_score = len(unique_signals) / (2 ** agent.bitN)
     print(f"GETTING EXPRESSIVITY: {expressivity_score:.4f}")
@@ -230,9 +233,9 @@ def hamming_distance(vec1, vec2):
 def compositionality(agent):
     meanings = [int2bin(agent.bitN, i) for i in range(2 ** agent.bitN)]
 
-    with torch.no_grad():
+    with torch.no_grad():  # Disable gradient tracking for efficiency
         signals = [
-            tuple(agent.m2s(torch.tensor(m, dtype=torch.float32).unsqueeze(0)).round().squeeze(0).numpy().astype(int))
+            tuple(agent.m2s(torch.tensor(m, dtype=torch.float32).unsqueeze(0)).round().squeeze(0).detach().numpy().astype(int))
             for m in meanings
         ]
 
@@ -257,21 +260,11 @@ def compositionality(agent):
     return correlation
 
 
+### --- Main Function ---
 def main():
-    bitN = 8
-    nodeN = 20
-    batch_size = 30
-    epochs = 100
-    generations = 30
-
-    stability_scores, expressivity_scores, compositionality_scores = iterated_learning(
-        generations, bitN, nodeN, batch_size, epochs
-    )
-
-    # Plot the results
-    plot_results(stability_scores, expressivity_scores, compositionality_scores, generations)
+    stability_scores, expressivity_scores, compositionality_scores = iterated_learning()
+    plot_results(stability_scores, expressivity_scores, compositionality_scores, 20)
 
 
 if __name__ == "__main__":
-    #set params here
     main()
