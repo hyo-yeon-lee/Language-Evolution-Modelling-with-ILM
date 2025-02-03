@@ -19,13 +19,15 @@ def create_agent(bitN, nodeN):
     m2s = nn.Sequential(
         nn.Linear(bitN, nodeN),  # meaning → hidden
         nn.Sigmoid(),  # activation
-        nn.Linear(nodeN, bitN)  # hidden → signal
+        nn.Linear(nodeN, bitN),  # hidden → signal
+        nn.Sigmoid()
     )
 
     s2m = nn.Sequential(
         nn.Linear(bitN, nodeN),  # signal → hidden
         nn.Sigmoid(),  # activation
-        nn.Linear(nodeN, bitN)  # hidden → meaning
+        nn.Linear(nodeN, bitN),  # hidden → meaning
+        nn.Sigmoid()
     )
     return Agent(bitN, m2s, s2m)
 
@@ -40,7 +42,6 @@ def generate_meaning_space(bitN):
 
 def gen_supervised_data(agent, tutor, B_size, all_meanings):
     sampled_meanings = rn.sample(all_meanings, B_size)  # Randomly select B_size meanings
-
     m2sdata = []
     for meaning in sampled_meanings:
         signal = tutor.m2s(meaning.unsqueeze(0)).detach().round().squeeze(0)
@@ -52,22 +53,21 @@ def gen_supervised_data(agent, tutor, B_size, all_meanings):
     return m2sdata, s2mdata
 
 
-def gen_unsupervised_data(agent, A_size):
-    all_meanings = generate_meaning_space(agent.bitN)
+def gen_unsupervised_data(A_size, all_meanings):
+    # all_meanings = generate_meaning_space(bitN)
     return rn.sample(all_meanings, A_size)  # Randomly select A_size meanings
 
 
 ### --- Training Function ---
-def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs=10, autoencoder_iters=20):
+def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, autoencoder_iters):
     optimiser = torch.optim.SGD(
-        list(agent.m2s.parameters()) + list(agent.s2m.parameters()), lr=0.01
+        list(agent.m2s.parameters()) + list(agent.s2m.parameters()), lr=1.0
     )
     loss_function = nn.MSELoss()
 
     # Get supervised dataset (B_size) from tutor
     m2sdata, s2mdata = gen_supervised_data(agent, tutor, B_size, all_meanings)
-    # unsupervised_data =
-
+    unsupervised_data = gen_unsupervised_data(A_size, all_meanings)
     # Get unsupervised meanings (A_size)
 
     for epoch in range(epochs):
@@ -101,11 +101,10 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs=10, autoen
 
         # Unsupervised Training (A-size)
         for _ in range(autoencoder_iters):
-            meanings_u = rn.sample(all_meanings, B_size)  # Select random B_size subset from A_size
-
+            # meanings_u = rn.sample(all_meanings, B_size)
             optimiser.zero_grad()
-            pred_m2m = agent.m2m(torch.stack(meanings_u))
-            loss_auto = loss_function(pred_m2m, torch.stack(meanings_u))
+            pred_m2m = agent.m2m(torch.stack(unsupervised_data))
+            loss_auto = loss_function(pred_m2m, torch.stack(unsupervised_data))
             loss_auto.backward()
             optimiser.step()
 
@@ -114,27 +113,26 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs=10, autoen
         print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
 
 
-def iterated_learning(generations=20, bitN=10, nodeN=10, A_size=30, B_size=100, epochs=30):
+def iterated_learning(generations=20, bitN=10, nodeN=10, A_size=30, B_size=100, epochs=20):
     print("\n==== Initializing first tutor (random, untrained network) ====")
     tutor = create_agent(bitN, nodeN)
 
     stability_scores = []
     expressivity_scores = []
     compositionality_scores = []
+    all_meanings = generate_meaning_space(bitN)
 
     for gen in range(1, generations + 1):
         print(f"\n==== Generation {gen} ====")
         pupil = create_agent(bitN, nodeN)
 
         # Train using separate A and B sets
-        all_meanings = generate_meaning_space(bitN)
-        train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs)
+        train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs, autoencoder_iters=30)
 
         stability_scores.append(stability(tutor, pupil, all_meanings))
-        expressivity_scores.append(expressivity(pupil))
+        expressivity_scores.append(expressivity(pupil, all_meanings))
         compositionality_scores.append(compositionality(pupil))
 
-        # Pupil becomes the next tutor
         tutor = pupil
 
     return stability_scores, expressivity_scores, compositionality_scores
@@ -171,13 +169,6 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
 
 ### --- Evaluation Metrics ---
 # Evaluation
-def calculate_entropy(p):
-    if p == 0 or p == 1:
-        return 0
-    else:
-        return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
-
-
 def stability(tutor, pupil, all_meanings):
     tutor.m2s.eval()
     pupil.s2m.eval()
@@ -195,29 +186,33 @@ def stability(tutor, pupil, all_meanings):
                                   .round().squeeze(0).numpy().astype(int))
 
             meaning_tuple = tuple(meaning.squeeze(0).numpy().astype(int))
-            print("===========----NEW----==============")
-            print(f"meaning tuple: {meaning_tuple}")
-            print(f"pupil_meaning: {pupil_meaning}")
+            # print("===========----NEW----==============")
+            # print(f"meaning tuple: {meaning_tuple}")
+            # print(f"pupil_meaning: {pupil_meaning}")
 
             if meaning_tuple == pupil_meaning:
                 matches += 1
 
     stability_score = matches / len(all_meanings)
-    print(f"GETTING STABILITY: {stability_score:.4f}")
+    # print(f"GETTING STABILITY: {stability_score:.4f}")
     return stability_score
 
 
 
-def expressivity(agent):
+def expressivity(agent, all_meanings):
     agent.m2s.eval()
     with torch.no_grad():
         unique_signals = set()
-        for i in range(2 ** agent.bitN):
-            meaning = torch.tensor(int2bin(agent.bitN, i), dtype=torch.float32).unsqueeze(0)
+        for meaning in all_meanings:
+            print("===========----NEW----==============")
+            # if len(all_meanings) == 0: print("Empty dataset")
+            # meaning =
+            print(f"expressivity_MEANING: {meaning}")
             signal = tuple(agent.m2s(meaning).round().squeeze(0).numpy().astype(int))
+            print(f"expressivity_SIGNAL: {signal}")
             unique_signals.add(signal)
 
-    print(len(unique_signals))
+    # print(len(unique_signals))
     print(unique_signals)
 
     expressivity_score = len(unique_signals) / (2 ** agent.bitN)
@@ -225,39 +220,48 @@ def expressivity(agent):
     return expressivity_score
 
 
-
-def hamming_distance(vec1, vec2):
-    return sum(x != y for x, y in zip(vec1, vec2))
+def calculate_entropy(p):
+    if p == 0 or p == 1:
+        return 0
+    else:
+        return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
 
 
 def compositionality(agent):
     meanings = [int2bin(agent.bitN, i) for i in range(2 ** agent.bitN)]
 
-    with torch.no_grad():  # Disable gradient tracking for efficiency
+    with torch.no_grad():
         signals = [
-            tuple(agent.m2s(torch.tensor(m, dtype=torch.float32).unsqueeze(0)).round().squeeze(0).detach().numpy().astype(int))
+            tuple(agent.m2s(torch.tensor(m, dtype=torch.float32).unsqueeze(0))
+                  .round().squeeze(0).detach().numpy().astype(int))
             for m in meanings
         ]
 
-    meaning_distances = []
-    signal_distances = []
+    n = len(meanings)  # Number of meanings
+    bit_length = len(meanings[0])  # Number of bits per meaning
 
-    # Compute pairwise distances
-    for i in range(len(meanings)):
-        for j in range(i + 1, len(meanings)):  # Avoid duplicate calculations
-            d_m = hamming_distance(meanings[i], meanings[j])
-            d_s = hamming_distance(signals[i], signals[j])
+    hij_matrix = np.zeros((n, bit_length))  # Stores entropy for each (meaning, signal) pair
 
-            meaning_distances.append(d_m)
-            signal_distances.append(d_s)
+    # Compute entropy for each meaning-signal relationship
+    for i in range(n):
+        for j in range(bit_length):
+            count_1 = sum(1 for k in range(n) if meanings[k][j] == 1)
+            p = count_1 / n  # Probability of '1' at bit position j
+            hij_matrix[i, j] = calculate_entropy(p)
 
-    # Compute Spearman's correlation
-    if len(set(meaning_distances)) == 1 or len(set(signal_distances)) == 1:
-        return 0  # Avoid singular matrix error
+    # Step 1: Compute the minimal entropy per meaning
+    h_i = np.min(hij_matrix, axis=1)
 
-    correlation, _ = spearmanr(meaning_distances, signal_distances)
-    print(f"COMPOSITIONALITY: {correlation:.4f}")
-    return correlation
+    # Step 2: Refine compositionality measure to prevent word overloading
+    H = np.array([np.min(hij_matrix[:, j]) for j in range(bit_length)])
+    h_prime = np.array([np.min(H) if np.any(H != 0) else 1 for _ in range(n)])
+
+    # Compute final compositionality score
+    c = 1 - (1 / n) * np.sum(h_prime)
+
+    # print(f"COMPOSITIONALITY (Entropy-based): {c:.4f}")
+    return c
+
 
 
 ### --- Main Function ---
