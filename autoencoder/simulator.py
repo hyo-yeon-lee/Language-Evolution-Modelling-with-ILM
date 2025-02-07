@@ -14,7 +14,8 @@ class Agent:
         self.m2m = nn.Sequential(m2s, s2m)  # Autoencoder
         self.num = i
 
-
+#check how the weights are randomly initialised (check the range)
+#check this with conor!
 def create_agent(bitN, nodeN, i):
     m2s = nn.Sequential(
         nn.Linear(bitN, nodeN),  # meaning → hidden
@@ -51,7 +52,7 @@ def gen_supervised_data(tutor, all_meanings):
 # def gen_unsupervised_data(A_size, all_meanings):
 #     return rn.sample(all_meanings, A_size)
 
-
+# choosing them with replacement for the unsupervised dataset : same meaning could come out twicel
 def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
     optimiser = torch.optim.SGD(
         list(agent.m2s.parameters()) + list(agent.s2m.parameters()), lr=5.0
@@ -67,9 +68,10 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
         total_loss = 0
 
         # Create B1 and B2 by selecting B_size pairs from T
-        B1 = rn.sample(T, B_size)
+        # random choice or samples?
+        B1 = [random.choice(T) for _ in range(B_size)]
         B2 = B1.copy()
-        A = [torch.tensor(meaning, dtype=torch.float32) for meaning, _ in B1]  # Convert meanings to tensors
+        A = [torch.tensor(meaning, dtype=torch.float32) for meaning, _ in B1]
 
         random.shuffle(B1)
         random.shuffle(B2)
@@ -88,24 +90,16 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
             optimiser.zero_grad()
 
             pred_m2s = agent.m2s(m2s_meaning)
-            # print(f"m2s_signal: {m2s_signal}   and  pred_m2s: {pred_m2s}")
-
             loss_m2s = loss_function(pred_m2s, m2s_signal)
-            # print(f"s2m signal: {s2m_signal}")
 
             pred_s2m = agent.s2m(s2m_signal)
             loss_s2m = loss_function(pred_s2m, s2m_meaning)
-            # print(f"s2m meaning: {s2m_meaning}     and pred_s2m: {pred_s2m}")
 
             loss = loss_m2s + loss_s2m
             loss.backward()
             optimiser.step()
             total_loss += loss.item()
 
-            pred_m2s_rounded = pred_m2s.detach().round().squeeze(0)
-            pred_s2m_rounded = pred_s2m.detach().round().squeeze(0)
-            # print(f"pred_m2s: {pred_m2s_rounded}     m2s_signal: {m2s_signal}")
-            # print(f"pred_s2m: {pred_s2m_rounded}     s2m_signal: {s2m_meaning}")
 
         # Unsupervised Training (A-size)
             for _ in range(20):
@@ -123,7 +117,7 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
         # print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
 
 
-def iterated_learning(generations=20, bitN=10, nodeN=10, A_size=225, B_size=100, epochs=20):
+def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epochs=20):
     print("\n==== Initializing first tutor (random, untrained network) ====")
     tutor = create_agent(bitN, nodeN, 1)
 
@@ -142,7 +136,7 @@ def iterated_learning(generations=20, bitN=10, nodeN=10, A_size=225, B_size=100,
 
         stability_scores.append(stability(tutor, pupil, all_meanings))
         expressivity_scores.append(expressivity(pupil, all_meanings))
-        compositionality_scores.append(compositionality(pupil))
+        compositionality_scores.append(compositionality(pupil, all_meanings))
 
         tutor = pupil
         print(f"Tutor gen: {tutor.num}")
@@ -232,31 +226,36 @@ def calculate_entropy(p):
         return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
 
 
-def compositionality(agent):
-    meanings = [int2bin(agent.bitN, i) for i in range(2 ** agent.bitN)]
+def compositionality(agent, all_meanings):
+    # meanings = [int2bin(agent.bitN, i) for i in range(2 ** agent.bitN)]
 
     with torch.no_grad():
         signals = [
             tuple(agent.m2s(torch.tensor(m, dtype=torch.float32).unsqueeze(0))
                   .round().squeeze(0).detach().numpy().astype(int))
-            for m in meanings
+            for m in all_meanings
         ]
 
-    n = len(meanings)
-    bit_length = len(meanings[0])
+    n = len(all_meanings)
+    bit_length = agent.bitN
 
     hij_matrix = np.zeros((n, bit_length))
 
     for i in range(n):
         for j in range(bit_length):
-            count_1 = sum(1 for k in range(n) if meanings[k][j] == 1)
+            count_1 = sum(1 for k in range(n) if all_meanings[k][j] == 1)
             p = count_1 / n
             hij_matrix[i, j] = calculate_entropy(p)
 
     h_i = np.min(hij_matrix, axis=1)
 
     H = np.array([np.min(hij_matrix[:, j]) for j in range(bit_length)])
-    h_prime = np.array([np.min(H) if np.any(H != 0) else 1 for _ in range(n)])
+
+    h_prime = np.array([
+        np.min([hij_matrix[i, j] for j in range(bit_length) if hij_matrix[i, j] in H])
+        if np.any(H != 0) else 1
+        for i in range(n)
+    ])
 
     c = 1 - (1 / n) * np.sum(h_prime)
 
