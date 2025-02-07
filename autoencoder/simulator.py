@@ -19,15 +19,15 @@ class Agent:
 def create_agent(bitN, nodeN, i):
     m2s = nn.Sequential(
         nn.Linear(bitN, nodeN),  # meaning → hidden
-        nn.Sigmoid(),  # activation
+        nn.Sigmoid(),  #activation
         nn.Linear(nodeN, bitN),  # hidden → signal
         nn.Sigmoid()
     )
 
     s2m = nn.Sequential(
-        nn.Linear(bitN, nodeN),
+        nn.Linear(bitN, nodeN), # signal->hidden
         nn.Sigmoid(),
-        nn.Linear(nodeN, bitN),
+        nn.Linear(nodeN, bitN), # hidden -> meaning
         nn.Sigmoid()
     )
     return Agent(bitN, m2s, s2m, i)
@@ -54,67 +54,64 @@ def gen_supervised_data(tutor, all_meanings):
 
 # choosing them with replacement for the unsupervised dataset : same meaning could come out twicel
 def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
-    optimiser = torch.optim.SGD(
-        list(agent.m2s.parameters()) + list(agent.s2m.parameters()), lr=5.0
-    )
-    # A IS UNSUPERVISED, B IS SUPERVISED TRAINING SET
+    optimiser_m2s = torch.optim.SGD(agent.m2s.parameters(), lr=5.0)
+    optimiser_s2m = torch.optim.SGD(agent.s2m.parameters(), lr=5.0)
+    optimiser_m2m = torch.optim.SGD(agent.m2m.parameters(), lr=5.0)
+
     loss_function = nn.MSELoss()
 
+    # Generate supervised dataset
     T = gen_supervised_data(tutor, all_meanings)
-    # print(len(T))
-    print(f"Current tutor gen: {tutor.num}")
+    B1 = [random.choice(T) for _ in range(B_size)]
+    B2 = B1.copy()
+    A = [torch.tensor(meaning, dtype=torch.float32) for meaning, _ in T]  # A list of meanings
+
+    random.shuffle(B2)
+    random.shuffle(A)
 
     for epoch in range(epochs):
         total_loss = 0
+        meanings_u = [random.choice(A) for _ in range(20)]
 
-        # Create B1 and B2 by selecting B_size pairs from T
-        # random choice or samples?
-        B1 = [random.choice(T) for _ in range(B_size)]
-        B2 = B1.copy()
-        A = [torch.tensor(meaning, dtype=torch.float32) for meaning, _ in B1]
+        # Training Encoder
+        optimiser_m2s.zero_grad()
+        m2s_meaning, m2s_signal = B1.pop(0)
+        m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32).unsqueeze(0)
+        m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32).unsqueeze(0)
 
-        random.shuffle(B1)
-        random.shuffle(B2)
-        random.shuffle(A)
+        pred_m2s = agent.m2s(m2s_meaning)
+        loss_m2s = loss_function(pred_m2s, m2s_signal)
+        loss_m2s.backward()
+        optimiser_m2s.step()
 
-        # Train encoder (m2s) and decoder (s2m)
-        for (m2s_meaning, m2s_signal), (s2m_meaning, s2m_signal) in zip(B1, B2):
-            m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32).unsqueeze(0)
-            # print("===================NEW RANGE===================")
-            # print(f"ms2 meaning: {m2s_meaning}")
-            m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32).unsqueeze(0)
+        # Training Decoder
+        optimiser_s2m.zero_grad()
+        s2m_signal, s2m_meaning = B2.pop(0)
+        s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)
+        s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float32).unsqueeze(0)
 
-            s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float32).unsqueeze(0)
-            s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)
+        pred_s2m = agent.s2m(s2m_signal)
+        loss_s2m = loss_function(pred_s2m, s2m_meaning)
+        loss_s2m.backward()
+        optimiser_s2m.step()
 
-            optimiser.zero_grad()
+        # Autoencoder Training
+        for meaning in meanings_u:
+            optimiser_m2m.zero_grad()
+            # print(f"------------Epoch {epoch}: Training autoencoder-----------------")
+            pred_m2m = agent.m2m(meaning)
+            loss_auto = loss_function(pred_m2m, meaning)
+            loss_auto.backward()
+            optimiser_m2m.step()
 
-            pred_m2s = agent.m2s(m2s_meaning)
-            loss_m2s = loss_function(pred_m2s, m2s_signal)
+            # print(f"Input meaning: {meaning}")
+            # print(f"Predicted meaning: {pred_m2m}")
 
-            pred_s2m = agent.s2m(s2m_signal)
-            loss_s2m = loss_function(pred_s2m, s2m_meaning)
+            # total_loss += loss_auto.item()
 
-            loss = loss_m2s + loss_s2m
-            loss.backward()
-            optimiser.step()
-            total_loss += loss.item()
+        # Accumulate total loss
+        # total_loss += loss_m2s.item() + loss_s2m.item()
 
-
-        # Unsupervised Training (A-size)
-            for _ in range(20):
-                optimiser.zero_grad()
-                meanings_u = rn.sample(A, 20)
-                meanings_u_tensors = torch.stack(meanings_u)
-                pred_m2m = agent.m2m(meanings_u_tensors)
-                loss_auto = loss_function(pred_m2m, meanings_u_tensors)
-                # print(f"loss in m2m: {loss_auto}")
-                loss_auto.backward()
-                optimiser.step()
-
-                total_loss += loss_auto.item()
-
-        # print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
 
 
 def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epochs=20):
@@ -184,22 +181,25 @@ def stability(tutor, pupil, all_meanings):
     total_meanings = len(all_meanings)
 
     with torch.no_grad():
-        for _ in range(total_meanings):
-            # Generate a random binary meaning vector
-            meaning = torch.randint(0, 2, (tutor.bitN,), dtype=torch.float32).unsqueeze(0)
+        for meaning in all_meanings:
+            # Forward pass through tutor
+            tutor_m2s_sig = tutor.m2s(meaning)
+            pupil_s2m_mn = pupil.s2m(tutor_m2s_sig)
+            # print("----------------NEW MEANING SET--------------")
 
-            tutor_signal = tutor.m2s(meaning).round()  # Keep tensor format
-            pupil_output = pupil.s2m(tutor_signal).round()
+            # Convert both to binary vectors for comparison
+            original_tuple = tuple((meaning > 0.5).int().tolist())  # Convert tensor to binary tuple
+            decoded_tuple = tuple((pupil_s2m_mn > 0.5).int().tolist())  # Convert decoded output to binary tuple
 
-            # Convert tensors to tuples for comparison
-            meaning_tuple = tuple(meaning.squeeze().cpu().detach().numpy().astype(int))
-            pupil_meaning = tuple(pupil_output.squeeze().cpu().detach().numpy().astype(int))
-            print("-----------NEW EPOCH===========")
-            print(f"meaning tuple: {meaning_tuple}")
-            print(f"pupil meaning: {pupil_meaning}")
+            # print(f"Original Meaning: {original_tuple}")
+            # print(f"Pupil Decoded Meaning: {decoded_tuple}")
 
-            # Check if decoded meaning matches original meaning
-            if meaning_tuple == pupil_meaning:
+            # Compare the tuples
+            if original_tuple == decoded_tuple:
+                print("----------------NEW MEANING SET--------------")
+
+                print(f"Original Meaning: {original_tuple}")
+                print(f"Pupil Decoded Meaning: {decoded_tuple}")
                 matches += 1
 
     # Compute stability score
