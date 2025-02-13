@@ -75,7 +75,6 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
 
     loss_function = nn.MSELoss()
 
-
     T = gen_supervised_data(tutor, all_meanings)
     A = gen_unsupervised_data(all_meanings, A_size)
 
@@ -83,13 +82,11 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
 
     for epoch in range(epochs):
         print(f"\n===== Epoch {epoch + 1}/{epochs} =====")
-
-        # Generate new shuffled training sets every epoch
         B1 = [random.choice(T) for _ in range(B_size)]
         B2 = B1.copy()
         random.shuffle(B2)
 
-        for i in range(B_size):  # Iterate through all supervised training samples
+        for i in range(B_size):
             # training encoder
             optimiser_m2s.zero_grad()
             m2s_meaning, m2s_signal = B1[i]
@@ -103,7 +100,7 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
 
             # training decoder
             optimiser_s2m.zero_grad()
-            s2m_meaning, s2m_signal = B2[i]  # Index instead of pop
+            s2m_meaning, s2m_signal = B2[i]
             s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)
             s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float32).unsqueeze(0)
 
@@ -113,7 +110,7 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
             optimiser_s2m.step()
 
             # unsupervised training
-            meanings_u = [random.choice(A) for _ in range(20)]  # New meanings every iteration
+            meanings_u = [random.choice(A) for _ in range(20)]
             for meaning in meanings_u:
                 optimiser_m2m.zero_grad()
                 auto_m = torch.tensor(meaning, dtype=torch.float32).unsqueeze(0)
@@ -125,11 +122,9 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
 
                 m2mtraining += 1
 
-    print("Total autoencoder training steps: ", m2mtraining)
 
 
 def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epochs=20):
-    print("\n==== Initializing first tutor (random, untrained network) ====")
     tutor = create_agent(bitN, nodeN, 1)
 
     stability_scores = []
@@ -138,7 +133,6 @@ def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epo
     all_meanings = generate_meaning_space(bitN)
 
     for gen in range(1, generations + 1):
-        print(f"\n==== Generation {gen} ====")
         pupil = create_agent(bitN, nodeN, gen)
         # Train using separate A and B sets
         train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs)
@@ -153,35 +147,49 @@ def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epo
     return stability_scores, expressivity_scores, compositionality_scores
 
 
-def plot_results(stability_scores, expressivity_scores, compositionality_scores, generations):
-    plt.figure(figsize=(15, 5))
 
+def plot_results(stability_scores, expressivity_scores, compositionality_scores, generations, replicates=25):
+    plt.figure(figsize=(15, 5))
     gens = np.arange(1, generations + 1)
 
+    # Define colors
+    colors = {'stability': 'purple', 'expressivity': 'blue', 'compositionality': 'orange',
+        's': (0.5, 0.0, 0.5, 0.1),  # Light purple (RGBA with low alpha)
+        'x': (0.0, 0.0, 1.0, 0.1),  # Light blue
+        'c': (1.0, 0.65, 0.0, 0.1)  # Light orange
+    }
+
     # Stability Plot
-    plt.subplot(1, 3, 1)
-    plt.plot(gens, stability_scores, color="blue", linewidth=3)
-    plt.xlabel("Generations")
-    plt.ylabel("s")
-    plt.title("A: Stability Over Generations", fontsize=16, loc="left")
-
-    # Expressivity
-    plt.subplot(1, 3, 2)
-    plt.plot(gens, expressivity_scores, color="orange", linewidth=3)
-    plt.xlabel("Generations")
-    plt.ylabel("x")
-    plt.title("B: Expressivity Over Generations", fontsize=16, loc="left")
-
-    # Compositionalirty
-    plt.subplot(1, 3, 3)
-    plt.plot(gens, compositionality_scores, color="green", linewidth=3)
-    plt.xlabel("Generations")
-    plt.ylabel("c")
-    plt.title("C: Compositionality Over Generations", fontsize=16, loc="left")
-
-    plt.suptitle(rf"n = {len(stability_scores)}", fontsize=16, x=0.5, y=1.05)
-    plt.tight_layout()
+    plt.figure(figsize=(6, 4))
+    for rep in stability_scores:
+        plt.plot(gens, rep, color=colors['s'], alpha=0.2)
+    plt.plot(gens, np.mean(stability_scores, axis=0), color=colors['stability'], linewidth=3)
+    plt.xlabel("Generations", fontsize=12)
+    plt.ylabel("s", fontsize=12)
+    # plt.title("Stability Over Generations", fontsize=14)
     plt.show()
+
+    # Expressivity Plot
+    plt.figure(figsize=(6, 4))
+    for rep in expressivity_scores:
+        plt.plot(gens, rep, color=colors['x'], alpha=0.2)
+    plt.plot(gens, np.mean(expressivity_scores, axis=0), color=colors['expressivity'], linewidth=3)
+    plt.xlabel("Generations", fontsize=12)
+    plt.ylabel("x", fontsize=12)
+    # plt.title("Expressivity Over Generations", fontsize=14)
+    plt.show()
+
+    # Compositionality Plot
+    plt.figure(figsize=(6, 4))
+    for rep in compositionality_scores:
+        plt.plot(gens, rep, color=colors['c'], alpha=0.2)
+    plt.plot(gens, np.mean(compositionality_scores, axis=0), color=colors['compositionality'], linewidth=3)
+    plt.xlabel("Generations", fontsize=12)
+    plt.ylabel("c", fontsize=12)
+    # plt.title("Compositionality Over Generations", fontsize=14)
+    plt.show()
+
+
 
 
 def stability(tutor, pupil, all_meanings):
@@ -193,12 +201,10 @@ def stability(tutor, pupil, all_meanings):
 
     with torch.no_grad():
         for meaning in all_meanings:
-            # Ensure input is tensor
             m = meaning.clone().detach().float().unsqueeze(0)
             tutor_m2s_sig = tutor.m2s(m)
             pupil_s2m_mn = pupil.s2m(tutor_m2s_sig)
 
-            # Convert both to binary vectors using numpy for consistent comparison
             original_arr = meaning.numpy() > 0.5
             decoded_arr = pupil_s2m_mn.squeeze(0).numpy() > 0.5
 
@@ -234,53 +240,55 @@ def compositionality(agent, all_meanings):
     num_messages = 2 ** n
     cnt = 0
 
-    # Initialize message and signal matrices
-    message_matrix = np.zeros((n, num_messages), dtype=int)
+    # Initialise matrices
+    meaning_matrix = np.zeros((n, num_messages), dtype=int)
     signal_matrix = np.zeros((n, num_messages), dtype=int)
 
-    # Populate the matrices with binary representations of messages and signals
     for m in all_meanings:
         s = agent.m2s(m.unsqueeze(0)).detach().round().squeeze(0)
-        # print("---------------------------------------------------")
-        # print(f"m: {m}")
-        # print(f"s: {s}")
-        message_matrix[:, cnt] = m
+        meaning_matrix[:, cnt] = m
         signal_matrix[:, cnt] = s
         cnt += 1
 
-    # print("----------------------NEW GEN----------------------")
-    # print(message_matrix)
 
-    # print("----------------------SIGNAL MATRIX----------------------")
-    # print(signal_matrix)
-    # Initialize entropy tracking
-    entropyV = [[] for _ in range(n)]
+    entropy = [[] for _ in range(n)]
 
-    # Compute entropy for each message bit-signal bit pair
-    for message_col in range(n):
-        this_col_entropy = np.ones(n)  # Store entropy values for each signal bit
+    for m_col in range(n):
+        curr_col_entropy = np.ones(n)
         for signal_col in range(n):
-            p = np.sum(message_matrix[message_col, :] * signal_matrix[signal_col, :]) / (2 ** (n - 1))
-            # print("------------NEW------------")
-            # print(f"meaning: {message_matrix[message_col, :]}")
-            # print(f"signal: {signal_matrix[message_col, :]}")
-            # print(f"p: {p}")
-            this_col_entropy[signal_col] = calculate_entropy(p)
-            # print(calculate_entropy(p))
+            p = np.sum(meaning_matrix[m_col, :] * signal_matrix[signal_col, :]) / (2 ** (n - 1))
+            curr_col_entropy[signal_col] = calculate_entropy(p)
 
-        # Find the signal bit with the minimum entropy
-        min_index = np.argmin(this_col_entropy)
-        min_val = this_col_entropy[min_index]
+    # finding minimum entropy
+        min_index = np.argmin(curr_col_entropy)
+        min_val = curr_col_entropy[min_index]
 
-        entropyV[min_index].append(min_val)
+        entropy[min_index].append(min_val)
 
-    # Compute final compositionality score
-    entropy_sum = sum(min(vals) if vals else 1 for vals in entropyV)
+    entropy_sum = sum(min(vals) if vals else 1 for vals in entropy)
 
     return 1 - entropy_sum / n
 
 
+def main():
+    generations = 50
+    replicates = 25
+
+    stability_scores = []
+    expressivity_scores = []
+    compositionality_scores = []
+
+    for i in range(replicates):
+        print(f"============================================{i}============================================")
+        stability, expressivity, compositionality = iterated_learning(generations=generations)
+        stability_scores.append(stability)
+        expressivity_scores.append(expressivity)
+        compositionality_scores.append(compositionality)
+
+    plot_results(stability_scores, expressivity_scores, compositionality_scores, generations, replicates)
+
 
 if __name__ == "__main__":
-    stability_scores, expressivity_scores, compositionality_scores = iterated_learning()
-    plot_results(stability_scores, expressivity_scores, compositionality_scores, 20)
+    main()
+    # stability_scores, expressivity_scores, compositionality_scores = iterated_learning()
+    # plot_results(stability_scores, expressivity_scores, compositionality_scores, 20)
