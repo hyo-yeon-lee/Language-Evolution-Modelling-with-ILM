@@ -14,26 +14,6 @@ class Agent:
         self.num = i
 
 
-class Encoder(nn.Module):
-    def __init__(self, latent_dim):
-        super(Encoder, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, 4, stride=2, padding=1)  # 64 → 32
-        self.conv2 = nn.Conv2d(32, 64, 4, stride=2, padding=1)  # 32 → 16
-        self.conv3 = nn.Conv2d(64, 128, 4, stride=2, padding=1)  # 16 → 8
-        self.conv4 = nn.Conv2d(128, 256, 4, stride=2, padding=1)  # 8 → 4
-        self.fc_mu = nn.Linear(256 * 4 * 4, latent_dim)
-        self.fc_logvar = nn.Linear(256 * 4 * 4, latent_dim)
-
-    def forward(self, x):
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.relu(self.conv3(x))
-        x = torch.relu(self.conv4(x))
-        x = x.view(x.size(0), -1)
-        mu = self.fc_mu(x)
-        logvar = self.fc_logvar(x)
-        return mu, logvar
-
 #check how the weights are randomly initialised (check the range) -> -0.3 ~ 0.3
 def create_agent(bitN, nodeN, i):
     m2s = nn.Sequential(

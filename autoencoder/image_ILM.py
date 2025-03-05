@@ -3,20 +3,26 @@ import numpy as np
 import torch
 import torch.nn as nn
 from matplotlib import pyplot as plt
+from numpy.ma.core import shape
+from sklearn.manifold import TSNE
+from scipy.spatial.distance import cosine
+from sklearn.cluster import KMeans
+np.set_printoptions(threshold=np.inf, linewidth=np.inf)
 
 
 class Agent:
-    def __init__(self, org_dim, int_dim, lat_dim, i):
+    def __init__(self, hid1, lat_dim, i):
+        super(Agent, self).__init__()
         # Instantiate the VAE with the provided dimensions
-        self.vae = VAE(org_dim, int_dim, lat_dim, i)
+        self.vae = VAE(hid1, lat_dim)
         self.num = i
-        self.m2s = self.vae.m2s   # encoder part
-        self.s2m = self.vae.s2m   # decoder part
+        self.m2s = self.vae.m2s  # encoder part
+        self.s2m = self.vae.s2m  # decoder part
         self.m2m = nn.Sequential(self.vae.m2s, self.vae.s2m)  # autoencoder
 
     def forward(self, x):
-        x_hat, z, mean, cov = self.vae.forward(x)
-        return x_hat, z, mean, cov
+        x_hat, z, mean, logvar = self.vae.forward(x)
+        return mean, logvar
 
     def encode(self, x):
         return self.vae.encode(x)
@@ -25,76 +31,103 @@ class Agent:
         return self.vae.decode(z)
 
 
-
-class VAE:
-    def __init__(self, org_dim, int_dim, lat_dim, i):
+class VAE(nn.Module):
+    def __init__(self, hid1, lat_dim):
+        super(VAE, self).__init__()
         self.m2s = nn.Sequential(
-            nn.Linear(org_dim, int_dim),
-            nn.Sigmoid(),
-            nn.Linear(int_dim, lat_dim),
-            nn.Sigmoid()
+            nn.Conv2d(1, 32, kernel_size=4, stride=2, padding=1),  # 64x64 -> 32x32
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),  # 32x32 -> 16x16
+            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),  # 16x16 -> 8x8
+            nn.ReLU(),
+            nn.Flatten(), # flatten it to 1d vector
+            nn.Linear(8 * 8 * 128, hid1),
+            nn.ReLU(),
+            nn.Linear(hid1, lat_dim * 2)
         )
 
-        self.mean = nn.Linear(lat_dim, 2)
-        self.cov = nn.Linear(lat_dim, 2)
+        self.mean = nn.Linear(lat_dim * 2, 16)
+        self.logvar = nn.Linear(lat_dim * 2, 16)
 
         self.s2m = nn.Sequential(
-            nn.Linear(lat_dim, int_dim),
-            nn.Sigmoid(),
-            nn.Linear(int_dim, org_dim),
+            nn.Linear(16, 8 * 8 * 128),
+            nn.ReLU(),
+            nn.Unflatten(1, (128, 8, 8)),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),  # 8x8 -> 16x16
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),  # 16x16 -> 32x32
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),  # 32x32 -> 64x64
             nn.Sigmoid()
-        )
+        ).to(dtype=torch.float16)
 
     def encode(self, x):
         x = self.m2s(x)
-        mean, cov = self.mean(x), self.cov(x)
-        return mean, cov
+        mean, logvar = self.mean(x), self.logvar(x)
+        return mean, logvar
 
-    def decode(self, x):
-        return self.s2m(x)
-
-    def reparameterisation(self, mean, cov):
-        dist = torch.distributions.Normal(0, cov)
-        epsilon = dist.sample()
-        z = mean + cov * epsilon
+    def reparameterize(self, mean, logvar):
+        std = torch.exp(0.5 * logvar) # Convert to float16
+        epsilon = torch.randn_like(std)  # Convert to float16
+        z = (mean + std * epsilon)  # Ensure final latent representation is float16
         return z
 
+    def decode(self, z):
+        return self.s2m(z)
+
     def forward(self, x):
-        mean, cov = self.encode(x)
-        z = self.reparameterisation(mean, cov)
-        x_hat = self.s2m(z)
-        return x_hat, z, mean, cov
+        mean, logvar = self.encode(x)
+        z = self.reparameterize(mean, logvar)
+        x_hat = self.decode(z)
+        return x_hat, z, mean, logvar
 
 
 
-def create_agent(org_dim, int_dim, lat_dim, i):
-    return Agent(org_dim, int_dim, lat_dim, i)
+def create_agent(hid1, lat_dim, i):
+    return Agent(hid1, lat_dim, i)
 
 
-def img2bin(img, i):
-    return None
-
-
-def generate_meaning_space(bitN):
-    dataset_zip = np.load('dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz', allow_pickle=True, encoding='latin1')
-    print('Keys in the dataset:', dataset_zip.keys())
-    imgs = dataset_zip['imgs']
-    latents_values = dataset_zip['latents_values']  # continuous values for latent factor
+def generate_meaning_space(shape, orientation, scale):
+    # Load dataset
+    dataset_zip = np.load('dsprites-dataset-master/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz', allow_pickle=True, encoding='latin1')
+    imgs = dataset_zip['imgs']  # Shape: (737280, 64, 64)
     latents_classes = dataset_zip['latents_classes']
-    metadata = dataset_zip['metadata'][()]  # dataset details
-    print('Metadata: \n', metadata)
-    return [torch.tensor(img2bin(bitN, i), dtype=torch.float32) for i in range(2 ** bitN)]
+    latents_values = dataset_zip['latents_values']
+
+    selected_indices = np.arange(len(imgs))
+
+    print("Images shape:", dataset_zip['imgs'].shape)  # Should be (737280, 64, 64)
+
+    if shape is not None:
+        selected_indices = selected_indices[np.isin(latents_values[selected_indices, 1], shape)]
+
+    if orientation is not None:
+        selected_indices = selected_indices[np.isin(latents_values[selected_indices, 3], orientation)]
+
+    if scale is not None:
+        selected_indices = selected_indices[np.isin(latents_values[selected_indices, 2], scale)]
+
+    filtered_imgs = imgs[selected_indices]
+
+    print("Filtered shape:", filtered_imgs.shape)  # Should remain (N, 64, 64)
+
+    return [torch.tensor(img, dtype=torch.float32).unsqueeze(0) for img in filtered_imgs]
+
 
 
 def gen_supervised_data(tutor, all_meanings):
+    print("Entered gen supervised data...")
     T = []
     for meaning in all_meanings:
+        # print("Shape of meaning before encoding:", meaning.shape)
         signal = tutor.m2s(meaning.unsqueeze(0)).detach().round().squeeze(0)
         T.append((meaning.numpy(), signal.numpy()))
     return T
 
 
 def gen_unsupervised_data(all_meanings, A_size):
+    print("Entered gen unsupervised data...")
     U = []
     for _ in range(A_size):
         meaning = random.choice(all_meanings)
@@ -102,16 +135,25 @@ def gen_unsupervised_data(all_meanings, A_size):
     return U
 
 
+def loss_function(recon_x, x, mean, cov):
+    recon_loss = nn.MSELoss()(recon_x, x)
+    kl_loss = -0.5 * torch.sum(1 + cov - mean.pow(2) - cov.exp())
+    loss = recon_loss + kl_loss
+    return loss
+
 
 def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
+    print("Entered train combined...")
     optimiser_m2s = torch.optim.Adam(agent.m2s.parameters(), lr=5.0)
     optimiser_s2m = torch.optim.Adam(agent.s2m.parameters(), lr=5.0)
-    optimiser_m2m = torch.optim.Adam(list(agent.m2s.parameters()) + list(agent.s2m.parameters()), lr=5.0) # check if I'm using the optimiser c
+    optimiser_m2m = torch.optim.Adam(list(agent.m2s.parameters()) + list(agent.s2m.parameters()),
+                                     lr=5.0)  # check if I'm using the optimiser c
 
-    loss_function = nn.MSELoss()
+    # loss_function = nn.MSELoss()
 
     T = gen_supervised_data(tutor, all_meanings)
     A = gen_unsupervised_data(all_meanings, A_size)
+
 
     m2mtraining = 0
 
@@ -123,65 +165,74 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
 
         for i in range(B_size):
             # training encoder
+            print(f"Processing {i}th data...")
             optimiser_m2s.zero_grad()
             m2s_meaning, m2s_signal = B1[i]
+            # print(m2s_meaning)
+
             m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32).unsqueeze(0)
             m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32).unsqueeze(0)
-
+            m2s_mean, m2s_cov = agent.forward(m2s_meaning)
             pred_m2s = agent.m2s(m2s_meaning)
-            loss_m2s = loss_function(pred_m2s, m2s_signal)
+
+            loss_m2s = loss_function(pred_m2s, m2s_signal, m2s_mean, m2s_cov)
             loss_m2s.backward()
             optimiser_m2s.step()
+            print(f"m2s meaning shape: {shape(m2s_meaning)}")
+            print(f"m2s signal shape: {shape(m2s_signal)}")
 
             # training decoder
             optimiser_s2m.zero_grad()
             s2m_meaning, s2m_signal = B2[i]
-            s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)
-            s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float32).unsqueeze(0)
+            s2m_signal = torch.tensor(s2m_signal, dtype=torch.float16).unsqueeze(0)
+            s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float16).unsqueeze(0)
+            print("----------finished training decoder-----------")
 
+            print(f"s2m meaning shape: {shape(s2m_meaning)}")
+            print(f"s2m signal shape: {shape(s2m_signal)}")
             pred_s2m = agent.s2m(s2m_signal)
-            loss_s2m = loss_function(pred_s2m, s2m_meaning)
+            print("----------finished predicting encoder-----------")
+
+            loss_s2m = nn.MSELoss()(pred_s2m, s2m_meaning)
             loss_s2m.backward()
             optimiser_s2m.step()
+            print("----------finished training decoder-----------")
+
 
             # unsupervised training
             meanings_u = [random.choice(A) for _ in range(20)]
             for meaning in meanings_u:
                 optimiser_m2m.zero_grad()
-                auto_m = torch.tensor(meaning, dtype=torch.float32).unsqueeze(0)
+                auto_m = torch.tensor(meaning, dtype=torch.float16).unsqueeze(0)
 
                 pred_m2m = agent.m2m(auto_m)
-                loss_auto = loss_function(pred_m2m, auto_m)
+                loss_auto = nn.MSELoss()(pred_m2m, auto_m)
                 loss_auto.backward()
                 optimiser_m2m.step()
 
                 m2mtraining += 1
 
 
-
-def iterated_learning(x_dim, h_dim1, h_dim2, img_set, generations=20, A_size=75, B_size=75, epochs=20):
-    tutor = create_agent(x_dim, h_dim1, h_dim2, 1)
+def iterated_learning(h_dim1, lat_dim, all_meanings, generations=20, A_size=75, B_size=75, epochs=20):
+    print("Entered iterated learning")
+    tutor = create_agent(h_dim1, lat_dim, 1)
 
     stability_scores = []
     expressivity_scores = []
     compositionality_scores = []
-    # all_meanings = generate_meaning_space(bitN)
-    all_meanings = img_set
+    test_sets = random.sample(all_meanings, 200)
 
     for gen in range(1, generations + 1):
-        pupil = create_agent(gen)
-        # Train using separate A and B sets
+        pupil = create_agent(h_dim1, lat_dim, gen)
         train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs)
 
-        stability_scores.append(stability(tutor, pupil, all_meanings))
-        expressivity_scores.append(expressivity(pupil, all_meanings))
-        compositionality_scores.append(compositionality(pupil, all_meanings))
+        stability_scores.append(stability(tutor, pupil, test_sets))
+        expressivity_scores.append(expressivity(pupil, test_sets))
+        compositionality_scores.append(compositionality(pupil, test_sets))
 
         tutor = pupil
-        # print(f"Tutor gen: {tutor.num}")
 
     return stability_scores, expressivity_scores, compositionality_scores
-
 
 
 def plot_results(stability_scores, expressivity_scores, compositionality_scores, generations, replicates=25):
@@ -190,10 +241,10 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
 
     # Define colors
     colors = {'stability': 'purple', 'expressivity': 'blue', 'compositionality': 'orange',
-        's': (0.5, 0.0, 0.5, 0.1),  # Light purple (RGBA with low alpha)
-        'x': (0.0, 0.0, 1.0, 0.1),  # Light blue
-        'c': (1.0, 0.65, 0.0, 0.1)  # Light orange
-    }
+              's': (0.5, 0.0, 0.5, 0.1),  # Light purple (RGBA with low alpha)
+              'x': (0.0, 0.0, 1.0, 0.1),  # Light blue
+              'c': (1.0, 0.65, 0.0, 0.1)  # Light orange
+              }
 
     # Stability Plot
     plt.figure(figsize=(6, 4))
@@ -226,42 +277,58 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
     plt.show()
 
 
-
-
 def stability(tutor, pupil, all_meanings):
     tutor.m2s.eval()
     pupil.s2m.eval()
 
-    matches = 0
-    total_meanings = len(all_meanings)
-
     with torch.no_grad():
+        tutor_latents = []
+        pupil_latents = []
+
         for meaning in all_meanings:
             m = meaning.clone().detach().float().unsqueeze(0)
-            tutor_m2s_sig = tutor.m2s(m)
-            pupil_s2m_mn = pupil.s2m(tutor_m2s_sig)
+            encoded_m = pupil.m2s(m)
+            pupil_latents.append(pupil.s2m(encoded_m).squeeze(0).numpy())
 
-            original_arr = meaning.numpy() > 0.5
-            decoded_arr = pupil_s2m_mn.squeeze(0).numpy() > 0.5
+            tutor_encoded_m = tutor.m2s(m)  # Encode to latent space (1, 16)
+            tutor_latents.append(tutor_encoded_m.squeeze(0).numpy())  # Store latent representation
 
-            if np.array_equal(original_arr, decoded_arr):
-                matches += 1
+    # Convert to numpy arrays
+    tutor_latents = np.array(tutor_latents)
+    pupil_latents = np.array(pupil_latents)
 
-    stability_score = matches / total_meanings
-    return stability_score
+    # Run t-SNE on both generations
+    tsne = TSNE(n_components=2, random_state=42)
+    tutor_2d = tsne.fit_transform(tutor_latents)
+    pupil_2d = tsne.fit_transform(pupil_latents)
+
+    # Compute stability score based on similarity of representations
+    similarity = np.mean([1 - cosine(t, p) for t, p in zip(tutor_2d, pupil_2d)])
+    print(similarity)
+
+    return similarity
 
 
 def expressivity(agent, all_meanings):
     agent.m2s.eval()
-    unique_signals = set()
 
     with torch.no_grad():
+        latents = []
         for meaning in all_meanings:
-            signal = tuple(agent.m2s(meaning).round().squeeze(0).numpy().astype(int))
-            unique_signals.add(signal)
+            latents.append(agent.m2s(meaning.unsqueeze(0)).squeeze(0).numpy())
 
-    expressivity_score = len(unique_signals) / (2 ** agent.bitN)
-    return expressivity_score
+    # Convert to numpy
+    latents = np.array(latents)
+
+    # Run t-SNE
+    tsne = TSNE(n_components=2, random_state=42)
+    latent_2d = tsne.fit_transform(latents)
+
+    # Compute dispersion (average pairwise Euclidean distance)
+    distances = np.sqrt(np.sum((latent_2d[:, None, :] - latent_2d[None, :, :]) ** 2, axis=-1))
+    expressivity_score = np.mean(distances)
+
+    return expressivity_score  # Higher = more diverse meanings
 
 
 def calculate_entropy(p):
@@ -271,42 +338,38 @@ def calculate_entropy(p):
         return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
 
 
-def compositionality(agent, all_meanings):
-    n = agent.bitN
-    num_messages = 2 ** n
-    cnt = 0
+def compositionality(agent, all_meanings, n_clusters=5):
+    agent.m2s.eval()
 
-    # Initialise matrices
-    meaning_matrix = np.zeros((n, num_messages), dtype=int)
-    signal_matrix = np.zeros((n, num_messages), dtype=int)
+    with torch.no_grad():
+        latents = []
+        for meaning in all_meanings:
+            latents.append(agent.m2s(meaning.unsqueeze(0)).squeeze(0).numpy())
 
-    for m in all_meanings:
-        s = agent.m2s(m.unsqueeze(0)).detach().round().squeeze(0)
-        meaning_matrix[:, cnt] = m
-        signal_matrix[:, cnt] = s
-        cnt += 1
+    # Convert to numpy
+    latents = np.array(latents)
 
+    # Run t-SNE
+    tsne = TSNE(n_components=2, random_state=42)
+    latent_2d = tsne.fit_transform(latents)
 
-    entropy = [[] for _ in range(n)]
+    # Apply KMeans clustering
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    labels = kmeans.fit_predict(latent_2d)
 
-    for m_col in range(n):
-        curr_col_entropy = np.ones(n)
-        for signal_col in range(n):
-            p = np.sum(meaning_matrix[m_col, :] * signal_matrix[signal_col, :]) / (2 ** (n - 1))
-            curr_col_entropy[signal_col] = calculate_entropy(p)
+    # Compute cluster separation (higher separation = more compositional)
+    cluster_separation = np.mean(
+        [np.linalg.norm(latent_2d[i] - latent_2d[j]) for i in range(len(latent_2d)) for j in range(len(latent_2d)) if
+         labels[i] == labels[j]])
 
-    # finding minimum entropy
-        min_index = np.argmin(curr_col_entropy)
-        min_val = curr_col_entropy[min_index]
-
-        entropy[min_index].append(min_val)
-
-    entropy_sum = sum(min(vals) if vals else 1 for vals in entropy)
-
-    return 1 - entropy_sum / n
+    return cluster_separation  # Higher = more compositional
 
 
 def main():
+    shape = [2, 3]
+    orientation = np.array([np.pi / 2, np.pi, 3 * np.pi / 2, 2 * np.pi])
+    scale = np.array([0.5, 0.6, 0.7, 0.8, 0.9, 1. ])
+    all_meanings = generate_meaning_space(shape=shape, orientation=orientation, scale=scale)
     generations = 50
     replicates = 25
 
@@ -314,13 +377,13 @@ def main():
     expressivity_scores = []
     compositionality_scores = []
 
-    for i in range(replicates):
-        print(f"============================================{i}============================================")
-        stability, expressivity, compositionality = iterated_learning(generations=generations)
-        stability_scores.append(stability)
-        expressivity_scores.append(expressivity)
-        compositionality_scores.append(compositionality)
-
+    # for i in range(replicates):
+    #     print(f"============================================{i}============================================")
+    stability, expressivity, compositionality = iterated_learning(256, 16, all_meanings)
+    stability_scores.append(stability)
+    # expressivity_scores.append(expressivity)
+    # compositionality_scores.append(compositionality)
+    #
     plot_results(stability_scores, expressivity_scores, compositionality_scores, generations, replicates)
 
 
