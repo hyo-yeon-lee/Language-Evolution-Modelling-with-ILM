@@ -7,33 +7,26 @@ from numpy.ma.core import shape
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import cosine
 from sklearn.cluster import KMeans
-np.set_printoptions(threshold=np.inf, linewidth=np.inf)
+# from tensorflow.python.ops.numpy_ops.np_dtypes import float16
+# np.set_printoptions(threshold=np.inf, linewidth=np.inf)
 
 
 class Agent:
     def __init__(self, hid1, lat_dim, i):
         super(Agent, self).__init__()
-        # Instantiate the VAE with the provided dimensions
         self.vae = VAE(hid1, lat_dim)
         self.num = i
-        self.m2s = self.vae.m2s  # encoder part
-        self.s2m = self.vae.s2m  # decoder part
-        self.m2m = nn.Sequential(self.vae.m2s, self.vae.s2m)  # autoencoder
-
-    def forward(self, x):
-        x_hat, z, mean, logvar = self.vae.forward(x)
-        return mean, logvar
-
-    def encode(self, x):
-        return self.vae.encode(x)
-
-    def decode(self, z):
-        return self.vae.decode(z)
+        self.m2s = self.vae.m2s
+        self.s2m = self.vae.s2m
+        self.m2m = nn.Sequential(self.vae.m2s, self.vae.s2m)
 
 
 class VAE(nn.Module):
     def __init__(self, hid1, lat_dim):
         super(VAE, self).__init__()
+        self.lat_dim = lat_dim  # Store latent dimension
+
+        # Encoder
         self.m2s = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=4, stride=2, padding=1),  # 64x64 -> 32x32
             nn.ReLU(),
@@ -41,17 +34,15 @@ class VAE(nn.Module):
             nn.ReLU(),
             nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),  # 16x16 -> 8x8
             nn.ReLU(),
-            nn.Flatten(), # flatten it to 1d vector
+            nn.Flatten(),  # Flatten to 1D vector
             nn.Linear(8 * 8 * 128, hid1),
             nn.ReLU(),
-            nn.Linear(hid1, lat_dim * 2)
+            nn.Linear(hid1, lat_dim * 2)  # Outputs [mean, logvar]
         )
 
-        self.mean = nn.Linear(lat_dim * 2, 16)
-        self.logvar = nn.Linear(lat_dim * 2, 16)
-
+        # Decoder
         self.s2m = nn.Sequential(
-            nn.Linear(16, 8 * 8 * 128),
+            nn.Linear(lat_dim, 8 * 8 * 128),  # Use `lat_dim`, not fixed 16
             nn.ReLU(),
             nn.Unflatten(1, (128, 8, 8)),
             nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),  # 8x8 -> 16x16
@@ -60,28 +51,30 @@ class VAE(nn.Module):
             nn.ReLU(),
             nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),  # 32x32 -> 64x64
             nn.Sigmoid()
-        ).to(dtype=torch.float16)
+        )
 
     def encode(self, x):
-        x = self.m2s(x)
-        mean, logvar = self.mean(x), self.logvar(x)
+        """Extracts mean and logvar from the encoder output"""
+        encoded = self.m2s(x)  # Get [mean, logvar] combined
+        mean, logvar = torch.chunk(encoded, 2, dim=1)  # Split tensor into 2 parts
         return mean, logvar
 
     def reparameterize(self, mean, logvar):
-        std = torch.exp(0.5 * logvar) # Convert to float16
-        epsilon = torch.randn_like(std)  # Convert to float16
-        z = (mean + std * epsilon)  # Ensure final latent representation is float16
-        return z
+        """Samples from the learned distribution using the reparameterization trick"""
+        std = torch.exp(0.5 * logvar)
+        epsilon = torch.randn_like(std)
+        return mean + std * epsilon
 
     def decode(self, z):
+        """Decodes latent vector back to image"""
         return self.s2m(z)
 
     def forward(self, x):
+        """Passes input through the full VAE pipeline"""
         mean, logvar = self.encode(x)
         z = self.reparameterize(mean, logvar)
         x_hat = self.decode(z)
         return x_hat, z, mean, logvar
-
 
 
 def create_agent(hid1, lat_dim, i):
@@ -92,9 +85,8 @@ def generate_meaning_space(shape, orientation, scale):
     # Load dataset
     dataset_zip = np.load('dsprites-dataset-master/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz', allow_pickle=True, encoding='latin1')
     imgs = dataset_zip['imgs']  # Shape: (737280, 64, 64)
-    latents_classes = dataset_zip['latents_classes']
+    # latents_classes = dataset_zip['latents_classes']
     latents_values = dataset_zip['latents_values']
-
     selected_indices = np.arange(len(imgs))
 
     print("Images shape:", dataset_zip['imgs'].shape)  # Should be (737280, 64, 64)
@@ -109,19 +101,18 @@ def generate_meaning_space(shape, orientation, scale):
         selected_indices = selected_indices[np.isin(latents_values[selected_indices, 2], scale)]
 
     filtered_imgs = imgs[selected_indices]
-
     print("Filtered shape:", filtered_imgs.shape)  # Should remain (N, 64, 64)
-
     return [torch.tensor(img, dtype=torch.float32).unsqueeze(0) for img in filtered_imgs]
-
 
 
 def gen_supervised_data(tutor, all_meanings):
     print("Entered gen supervised data...")
     T = []
     for meaning in all_meanings:
-        # print("Shape of meaning before encoding:", meaning.shape)
-        signal = tutor.m2s(meaning.unsqueeze(0)).detach().round().squeeze(0)
+        meaning = meaning.unsqueeze(0)
+        mean, logvar = tutor.vae.encode(meaning)
+        signal = tutor.vae.reparameterize(mean, logvar).detach().squeeze(0)
+        # print(f"{np.shape(signal)}")
         T.append((meaning.numpy(), signal.numpy()))
     return T
 
@@ -133,6 +124,7 @@ def gen_unsupervised_data(all_meanings, A_size):
         meaning = random.choice(all_meanings)
         U.append(meaning.numpy())
     return U
+
 
 
 def loss_function(recon_x, x, mean, cov):
@@ -168,29 +160,32 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
             print(f"Processing {i}th data...")
             optimiser_m2s.zero_grad()
             m2s_meaning, m2s_signal = B1[i]
-            # print(m2s_meaning)
 
-            m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32).unsqueeze(0)
-            m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32).unsqueeze(0)
-            m2s_mean, m2s_cov = agent.forward(m2s_meaning)
-            pred_m2s = agent.m2s(m2s_meaning)
+            m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32)
+            m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32)
 
-            loss_m2s = loss_function(pred_m2s, m2s_signal, m2s_mean, m2s_cov)
+            # Now shape is (1, 1, 64, 64) → (batch_size, channels, height, width)
+            m2s_mean, m2s_logvar = agent.vae.encode(m2s_meaning)
+            m2s_z = agent.vae.reparameterize(m2s_mean, m2s_logvar).squeeze(0)
+            print(f"m2s z shape: {m2s_z.shape}     m2s_z : {m2s_z.detach().cpu().numpy()}")
+            print(f"m2s meaning shape: {shape(m2s_meaning)}")
+            print(f"m2s signal shape: {shape(m2s_signal)}  m2s signal: {m2s_signal}")
+
+            loss_m2s = loss_function(m2s_z, m2s_signal, m2s_mean, m2s_logvar)
             loss_m2s.backward()
             optimiser_m2s.step()
-            print(f"m2s meaning shape: {shape(m2s_meaning)}")
-            print(f"m2s signal shape: {shape(m2s_signal)}")
+
 
             # training decoder
             optimiser_s2m.zero_grad()
             s2m_meaning, s2m_signal = B2[i]
             s2m_signal = torch.tensor(s2m_signal, dtype=torch.float16).unsqueeze(0)
-            s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float16).unsqueeze(0)
+            s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float16)
             print("----------finished training decoder-----------")
 
             print(f"s2m meaning shape: {shape(s2m_meaning)}")
             print(f"s2m signal shape: {shape(s2m_signal)}")
-            pred_s2m = agent.s2m(s2m_signal)
+            pred_s2m = agent.s2m(s2m_signal).suq
             print("----------finished predicting encoder-----------")
 
             loss_s2m = nn.MSELoss()(pred_s2m, s2m_meaning)
