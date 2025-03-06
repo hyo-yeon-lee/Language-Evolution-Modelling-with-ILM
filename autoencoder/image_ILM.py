@@ -2,6 +2,7 @@ import random
 import numpy as np
 import torch
 import torch.nn as nn
+from keras.src.ops import dtype
 from matplotlib import pyplot as plt
 from numpy.ma.core import shape
 from sklearn.manifold import TSNE
@@ -42,7 +43,9 @@ class VAE(nn.Module):
 
         # Decoder
         self.s2m = nn.Sequential(
-            nn.Linear(lat_dim, 8 * 8 * 128),  # Use `lat_dim`, not fixed 16
+            nn.Linear(lat_dim, hid1),
+            nn.ReLU(),
+            nn.Linear(hid1, 8 * 8 * 128),  # Use `lat_dim`, not fixed 16
             nn.ReLU(),
             nn.Unflatten(1, (128, 8, 8)),
             nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),  # 8x8 -> 16x16
@@ -109,12 +112,14 @@ def gen_supervised_data(tutor, all_meanings):
     print("Entered gen supervised data...")
     T = []
     for meaning in all_meanings:
-        meaning = meaning.unsqueeze(0)
+        meaning = torch.tensor(meaning, dtype=torch.float16) if not isinstance(meaning, torch.Tensor) else meaning
+        meaning = meaning.unsqueeze(0)  # Ensure batch dimension
         mean, logvar = tutor.vae.encode(meaning)
         signal = tutor.vae.reparameterize(mean, logvar).detach().squeeze(0)
-        # print(f"{np.shape(signal)}")
-        T.append((meaning.numpy(), signal.numpy()))
+        T.append((meaning.detach().cpu().numpy(), signal.detach().cpu().numpy()))
+
     return T
+
 
 
 def gen_unsupervised_data(all_meanings, A_size):
@@ -160,17 +165,13 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
             print(f"Processing {i}th data...")
             optimiser_m2s.zero_grad()
             m2s_meaning, m2s_signal = B1[i]
-
             m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32)
             m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32)
+            print(f"m2s_signal type: {np.shape(m2s_signal)}")
 
             # Now shape is (1, 1, 64, 64) → (batch_size, channels, height, width)
             m2s_mean, m2s_logvar = agent.vae.encode(m2s_meaning)
             m2s_z = agent.vae.reparameterize(m2s_mean, m2s_logvar).squeeze(0)
-            print(f"m2s z shape: {m2s_z.shape}     m2s_z : {m2s_z.detach().cpu().numpy()}")
-            print(f"m2s meaning shape: {shape(m2s_meaning)}")
-            print(f"m2s signal shape: {shape(m2s_signal)}  m2s signal: {m2s_signal}")
-
             loss_m2s = loss_function(m2s_z, m2s_signal, m2s_mean, m2s_logvar)
             loss_m2s.backward()
             optimiser_m2s.step()
@@ -178,19 +179,20 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
 
             # training decoder
             optimiser_s2m.zero_grad()
-            s2m_meaning, s2m_signal = B2[i]
-            s2m_signal = torch.tensor(s2m_signal, dtype=torch.float16).unsqueeze(0)
-            s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float16)
-            print("----------finished training decoder-----------")
+            s2m_meaning, s2m_signal = B2[i]  # Extract `z` (16D)
 
-            print(f"s2m meaning shape: {shape(s2m_meaning)}")
-            print(f"s2m signal shape: {shape(s2m_signal)}")
-            pred_s2m = agent.s2m(s2m_signal).suq
-            print("----------finished predicting encoder-----------")
+            s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)   # Ensure shape (1, 16)
+            s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float32)
+            print(f"s2m_signal shape before passing to decoder: {s2m_signal.shape}")
+
+            pred_s2m = agent.vae.s2m(s2m_signal)
+            pred_s2m = pred_s2m.to(torch.float32)
+            print(pred_s2m.shape, s2m_meaning.shape)
 
             loss_s2m = nn.MSELoss()(pred_s2m, s2m_meaning)
             loss_s2m.backward()
             optimiser_s2m.step()
+
             print("----------finished training decoder-----------")
 
 
