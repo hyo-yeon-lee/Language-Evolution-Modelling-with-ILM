@@ -162,14 +162,13 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
 
         for i in range(B_size):
             # training encoder
-            print(f"Processing {i}th data...")
+            print(f"Processing {i+1}th data...")
             optimiser_m2s.zero_grad()
             m2s_meaning, m2s_signal = B1[i]
             m2s_meaning = torch.tensor(m2s_meaning, dtype=torch.float32)
             m2s_signal = torch.tensor(m2s_signal, dtype=torch.float32)
-            print(f"m2s_signal type: {np.shape(m2s_signal)}")
+            # print(f"m2s_signal type: {np.shape(m2s_signal)}")
 
-            # Now shape is (1, 1, 64, 64) → (batch_size, channels, height, width)
             m2s_mean, m2s_logvar = agent.vae.encode(m2s_meaning)
             m2s_z = agent.vae.reparameterize(m2s_mean, m2s_logvar).squeeze(0)
             loss_m2s = loss_function(m2s_z, m2s_signal, m2s_mean, m2s_logvar)
@@ -179,9 +178,8 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
 
             # training decoder
             optimiser_s2m.zero_grad()
-            s2m_meaning, s2m_signal = B2[i]  # Extract `z` (16D)
-
-            s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)   # Ensure shape (1, 16)
+            s2m_meaning, s2m_signal = B2[i]
+            s2m_signal = torch.tensor(s2m_signal, dtype=torch.float32).unsqueeze(0)
             s2m_meaning = torch.tensor(s2m_meaning, dtype=torch.float32)
             print(f"s2m_signal shape before passing to decoder: {s2m_signal.shape}")
 
@@ -200,10 +198,14 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
             meanings_u = [random.choice(A) for _ in range(20)]
             for meaning in meanings_u:
                 optimiser_m2m.zero_grad()
-                auto_m = torch.tensor(meaning, dtype=torch.float16).unsqueeze(0)
-
-                pred_m2m = agent.m2m(auto_m)
-                loss_auto = nn.MSELoss()(pred_m2m, auto_m)
+                auto_m = torch.tensor(meaning, dtype=torch.float32).unsqueeze(0)
+                # print(f"auto_m shape: {auto_m}")
+                m2s_z = agent.vae.reparameterize(m2s_mean, m2s_logvar).squeeze(0)
+                # pred_m2m = agent.m2s(auto_m)
+                mu, logvar = agent.vae.encode(auto_m)
+                reparam = agent.vae.reparameterize(mu, logvar)
+                reconst = agent.vae.decode(reparam)
+                loss_auto = nn.MSELoss()(reconst, auto_m)
                 loss_auto.backward()
                 optimiser_m2m.step()
 
