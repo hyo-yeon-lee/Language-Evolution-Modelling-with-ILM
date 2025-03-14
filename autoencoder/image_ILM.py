@@ -51,6 +51,7 @@ class VAE(nn.Module):
         )
 
     def encode(self, x):
+        # print(f"shape: {x.shape}")
         encoded = self.m2s(x)
         encoded = encoded.view(encoded.shape[0], -1, 2)
         mean, logvar = encoded[:, :, 0], encoded[:, :, 1]
@@ -212,7 +213,7 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, etrain):
 
 
 
-def iterated_learning(h_dim1, lat_dim, all_meanings, generations=20, A_size=120, B_size=120, epochs=40, etrain = 5):
+def iterated_learning(h_dim1, lat_dim, all_meanings, generations=20, A_size=12, B_size=12, epochs=2, etrain = 5):
     print("Entered iterated learning")
     tutor = create_agent(h_dim1, lat_dim, 1)
 
@@ -286,11 +287,12 @@ def stability(tutor, pupil, all_images):
 
     with torch.no_grad():
         for image in all_images:
-            img = image.clone().detach().float().unsqueeze(0)
-            mu, logvar = tutor.vae.encode(img)
+            meaning = torch.tensor(image, dtype=torch.float32).unsqueeze(0)
+            mu, logvar = tutor.vae.encode(meaning)
+            # mu, logvar = tutor.vae.encode(meaning)
             latent = tutor.vae.reparameterise(mu, logvar)
             reconstructed_img = pupil.vae.decode(latent)
-            loss = nn.MSELoss()(reconstructed_img, img)
+            loss = nn.MSELoss()(reconstructed_img, meaning)
             # total_loss += loss.item() 
             print(f"loss: {loss}")
 
@@ -310,11 +312,13 @@ def expressivity(agent, all_meanings):
 
     with torch.no_grad():
         for meaning in all_meanings:
+            meaning = torch.tensor(meaning, dtype=torch.float32).unsqueeze(0)
             mu, logvar = agent.vae.encode(meaning)
             latent = agent.vae.reparameterise(mu, logvar)
             unique_signals.add(tuple(latent.squeeze(0).cpu().numpy()))
 
     expressivity_score = len(unique_signals) / len(all_meanings)
+    print(f"Expressivity Score: {expressivity_score:.4f}")
     return expressivity_score
 
 
