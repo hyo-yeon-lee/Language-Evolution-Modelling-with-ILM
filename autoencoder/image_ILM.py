@@ -396,8 +396,8 @@ def stability(tutor, pupil, test_dataset):
     tsne = TSNE(n_components=3, perplexity=40, random_state=42)
     embeddings = tsne.fit_transform(combined)
 
-    original_embeds = embeddings[:len(all_images)]
-    reconstructed_embeds = embeddings[len(all_images):]
+    original_embeds = embeddings[:len(test_dataset)]
+    reconstructed_embeds = embeddings[len(test_dataset):]
     kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     clusters = kmeans.fit_predict(original_embeds)
 
@@ -414,9 +414,9 @@ def stability(tutor, pupil, test_dataset):
     # print(f"Stability matches: {stability_matches}")
     print(f"Stabiltiy matches: {np.sum(stability_matches)}")
 
-    stability_score = np.sum(stability_matches)/ len(all_images)
+    stability_score = np.sum(stability_matches)/ len(test_dataset)
 
-    visualize_clustering(all_images, embeddings, clusters, n_clusters=32)
+    visualize_clustering(test_dataset, embeddings, clusters, n_clusters=32)
     print(f"Image-based conceptual stability score (cluster agreement): {stability_score:.4f}")
     return stability_score
 
