@@ -1,5 +1,8 @@
 import random
+from collections import defaultdict
+
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 from matplotlib import pyplot as plt
@@ -100,10 +103,19 @@ def generate_meaning_space(shape, orientation, scale):
         mask &= np.isin(latents_classes[:, 2], scale)
 
     filtered_imgs = imgs[mask]
+    filtered_latents = latents_classes[mask]
     print(f"Filtered images: {filtered_imgs.shape}")
 
+    meta_testset = [
+        (int(latent[1]), int(latent[3]), int(latent[2]), torch.tensor(img, dtype=torch.float32).unsqueeze(0))
+        for latent, img in zip(filtered_latents, filtered_imgs)
+    ]
+
     # Convert to torch tensors
-    return [torch.tensor(img, dtype=torch.float32).unsqueeze(0) for img in filtered_imgs]
+    return [torch.tensor(img, dtype=torch.float32).unsqueeze(0) for img in filtered_imgs], meta_testset
+    # return meta_testset
+
+
 
 
 def gen_supervised_data(tutor, all_meanings):
@@ -140,10 +152,10 @@ def loss_function(recon_x, x, mean, cov):
 
 def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, etrain):
     print("Entered train combined...")
-    optimiser_m2s = torch.optim.SGD(agent.m2s.parameters(), lr=0.001)
-    optimiser_s2m = torch.optim.SGD(agent.s2m.parameters(), lr=0.001)
+    optimiser_m2s = torch.optim.SGD(agent.m2s.parameters(), lr=0.005)
+    optimiser_s2m = torch.optim.SGD(agent.s2m.parameters(), lr=0.005)
     optimiser_m2m = torch.optim.SGD(list(agent.m2s.parameters()) + list(agent.s2m.parameters()),
-                                     lr=0.001)  # check if I'm using the optimiser c
+                                     lr=0.005)  # check if I'm using the optimiser c
 
     T = gen_supervised_data(tutor, all_meanings)
     A = gen_unsupervised_data(all_meanings, A_size)
@@ -168,7 +180,7 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, etrain):
             #multiple sampling from same distribution
             for e in range(etrain):
                 m2s_mean, m2s_logvar = agent.vae.encode(m2s_meaning)
-                m2s_z = agent.vae.reparameterise(m2s_mean, m2s_logvar).round().squeeze(0)
+                m2s_z = agent.vae.reparameterise(m2s_mean, m2s_logvar).squeeze(0)
                 # print("M2S Latent vector z:", m2s_z)
                 loss_m2s = loss_function(m2s_z, m2s_signal, m2s_mean, m2s_logvar)
                 loss_m2s.backward()
@@ -264,24 +276,52 @@ def visualize_clustering(all_meanings, tsne_embeddings, clusters, n_clusters=32)
 
 
 
+def random_test_sets(meta_dataset, sample_size):
+    grouped = defaultdict(list)
+    for item in meta_dataset:
+        shape, orientation, scale, image_tensor = item
+        grouped[(shape, orientation, scale)].append(item)
 
-def iterated_learning(h_dim1, lat_dim, all_meanings, generations=20, A_size=75, B_size=75, epochs=20, etrain = 3):
+    samples_list = []
+    for key, group_items in grouped.items():
+        if len(group_items) >= sample_size:
+            sampled_items = random.sample(group_items, sample_size)
+        else:
+            print(f"⚠ Warning: Not enough data for {key}, only {len(group_items)} available, taking all.")
+            sampled_items = group_items
+        samples_list.extend(sampled_items)
+
+    count_check = defaultdict(int)
+    for item in samples_list:
+        key = (item[0], item[1], item[2])
+        count_check[key] += 1
+
+    for key, count in count_check.items():
+        print(f"{key}: {count}")
+
+    return samples_list
+
+
+
+def iterated_learning(h_dim1, lat_dim, all_meanings, meta_testset, generations=20, A_size=120, B_size=120, epochs=20, etrain = 3):
     print("Entered iterated learning")
     tutor = create_agent(h_dim1, lat_dim, 1)
 
     stability_scores = []
     expressivity_scores = []
     compositionality_scores = []
-    test_sets = random.sample(all_meanings, 3200)
+
+
 
     for gen in range(1, generations + 1):
+        test_data = random_test_sets(meta_testset, 100)
         print(f"================================================{gen}th GENERATION================================================")
         pupil = create_agent(h_dim1, lat_dim, gen)
         train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs, etrain)
 
-        stability_scores.append(stability(tutor, pupil, test_sets))
-        expressivity_scores.append(expressivity(pupil, test_sets))
-        # compositionality_scores.append(compositionality(pupil, test_sets))
+        stability_scores.append(stability(tutor, pupil, test_data))
+        expressivity_scores.append(expressivity(pupil, test_data))
+        # compositionality_scores.append(compositionality(pupil, test_data))
 
         tutor = pupil
 
@@ -330,7 +370,7 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
     # plt.show()
 
 
-def stability(tutor, pupil, all_images):
+def stability(tutor, pupil, test_dataset):
     # n_clusters = len(shape) * len(orientation) * len(scale)
     n_clusters = 32
 
@@ -340,7 +380,7 @@ def stability(tutor, pupil, all_images):
     pupil.vae.eval()
 
     with torch.no_grad():
-        for meaning in all_images:
+        for meaning in test_dataset:
             meaning_tensor = meaning.clone().detach().unsqueeze(0).float()
             orig_images.append(meaning_tensor.cpu().numpy().flatten())
             mu, logvar = tutor.vae.encode(meaning_tensor)
@@ -447,7 +487,7 @@ def main():
     orientation = [10, 19, 29, 39]
     scale = [0, 1, 3, 5]
 
-    all_meanings = generate_meaning_space(shape=shape, orientation=orientation, scale=scale)
+    all_meanings, meta_testset = generate_meaning_space(shape=shape, orientation=orientation, scale=scale)
     generations = 20
     replicates = 1
 
@@ -457,7 +497,7 @@ def main():
 
     for i in range(replicates):
         #     print(f"============================================{i}============================================")
-        stability, expressivity, compositionality = iterated_learning(128, 5, all_meanings) #just seeing whether it could capture the space
+        stability, expressivity, compositionality = iterated_learning(128, 5, all_meanings, meta_testset) #just seeing whether it could capture the space
         stability_scores.append(stability)
     # expressivity_scores.append(expressivity)
     # compositionality_scores.append(compositionality)
