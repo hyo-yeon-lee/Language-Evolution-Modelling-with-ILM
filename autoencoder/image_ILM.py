@@ -381,7 +381,8 @@ def stability(tutor, pupil, test_dataset):
 
     with torch.no_grad():
         for meaning in test_dataset:
-            meaning_tensor = meaning.clone().detach().unsqueeze(0).float()
+            # meaning_tensor = meaning.clone().detach().unsqueeze(0).float()
+            meaning_tensor = meaning[3].clone().detach().unsqueeze(0).float()
             orig_images.append(meaning_tensor.cpu().numpy().flatten())
             mu, logvar = tutor.vae.encode(meaning_tensor)
             z = tutor.vae.reparameterise(mu, logvar)
@@ -404,19 +405,17 @@ def stability(tutor, pupil, test_dataset):
     distances = np.linalg.norm(reconstructed_embeds[:, None] - kmeans.cluster_centers_, axis=2)
     assigned_clusters = np.argmin(distances, axis=1)
 
-    for i in range(5):
-        dist_to_assigned = distances[i, assigned_clusters[i]]
-        dist_to_true_cluster = distances[i, clusters[i]]
-        print(
-            f"Point {i}: dist to assigned cluster center = {dist_to_assigned:.4f}, dist to original cluster center = {dist_to_true_cluster:.4f}")
+    # for i in range(5):
+    #     dist_to_assigned = distances[i, assigned_clusters[i]]
+    #     dist_to_true_cluster = distances[i, clusters[i]]
+    #     print(
+    #         f"Point {i}: dist to assigned cluster center = {dist_to_assigned:.4f}, dist to original cluster center = {dist_to_true_cluster:.4f}")
 
     stability_matches = (clusters == assigned_clusters)
     # print(f"Stability matches: {stability_matches}")
     print(f"Stabiltiy matches: {np.sum(stability_matches)}")
-
     stability_score = np.sum(stability_matches)/ len(test_dataset)
-
-    visualize_clustering(test_dataset, embeddings, clusters, n_clusters=32)
+    # visualize_clustering(test_dataset, embeddings, clusters, n_clusters=32)
     print(f"Image-based conceptual stability score (cluster agreement): {stability_score:.4f}")
     return stability_score
 
@@ -428,14 +427,15 @@ def expressivity(agent, all_meanings):
 
     with torch.no_grad():
         for meaning in all_meanings:
-            meaning = torch.tensor(meaning, dtype=torch.float32).unsqueeze(0)
-            mu, logvar = agent.vae.encode(meaning)
+            meaning_tensor = meaning[3].clone().detach().unsqueeze(0).float()
+            mu, logvar = agent.vae.encode(meaning_tensor)
             latent = agent.vae.reparameterise(mu, logvar)
             unique_signals.add(tuple(latent.squeeze(0).cpu().numpy()))
 
     expressivity_score = len(unique_signals) / len(all_meanings)
     print(f"Expressivity Score: {expressivity_score:.4f}")
     return expressivity_score
+
 
 
 
