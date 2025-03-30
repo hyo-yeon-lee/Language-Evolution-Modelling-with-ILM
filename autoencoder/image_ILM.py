@@ -1,6 +1,6 @@
 import random
 from collections import defaultdict
-
+import argparse
 import numpy as np
 import pandas as pd
 import torch
@@ -10,6 +10,7 @@ from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.manifold import TSNE
+from collections import defaultdict
 
 
 class Agent:
@@ -303,7 +304,7 @@ def random_test_sets(meta_dataset, sample_size):
 
 
 
-def iterated_learning(h_dim1, lat_dim, all_meanings, meta_testset, generations=20, A_size=120, B_size=120, epochs=20, etrain = 3):
+def iterated_learning(h_dim1, lat_dim, all_meanings, meta_testset, generations=20, A_size=220, B_size=220, epochs=20, etrain=20, sample_size=100):
     print("Entered iterated learning")
     tutor = create_agent(h_dim1, lat_dim, 1)
 
@@ -311,10 +312,8 @@ def iterated_learning(h_dim1, lat_dim, all_meanings, meta_testset, generations=2
     expressivity_scores = []
     compositionality_scores = []
 
-
-
     for gen in range(1, generations + 1):
-        test_data = random_test_sets(meta_testset, 100)
+        test_data = random_test_sets(meta_testset, sample_size)
         print(f"================================================{gen}th GENERATION================================================")
         pupil = create_agent(h_dim1, lat_dim, gen)
         train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs, etrain)
@@ -439,6 +438,8 @@ def expressivity(agent, all_meanings):
 
 
 
+
+
 # def calculate_entropy(p):
 #     if p == 0 or p == 1:
 #         return 0
@@ -503,6 +504,51 @@ def main():
     # compositionality_scores.append(compositionality)
 
     plot_results(stability_scores, expressivity_scores, compositionality_scores, generations, replicates)
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--A_size", type=int, default=220)
+    parser.add_argument("--B_size", type=int, default=220)
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--test_size", type=int, default=100)
+    parser.add_argument("--generations", type=int, default=20)
+    return parser.parse_args()
+
+
+# def main():
+#     args = parse_args()
+#
+#     shape = [0, 1]
+#     orientation = [10, 19, 29, 39]
+#     scale = [0, 1, 3, 5]
+#
+#     all_meanings, meta_testset = generate_meaning_space(shape=shape, orientation=orientation, scale=scale)
+#
+#     replicates = 1
+#
+#     stability_scores = []
+#     expressivity_scores = []
+#     compositionality_scores = []
+#
+#     for rep in range(replicates):
+#         stability, expressivity, compositionality = iterated_learning(
+#             h_dim1=128,
+#             lat_dim=5,
+#             all_meanings=all_meanings,
+#             meta_testset=meta_testset,
+#             generations=args.generations,
+#             A_size=args.A_size,
+#             B_size=args.B_size,
+#             epochs=args.epochs,
+#             etrain=20,
+#             sample_size=args.test_size
+#         )
+#         stability_scores.append(stability)
+#         expressivity_scores.append(expressivity)
+#         compositionality_scores.append(compositionality)
+#
+#     plot_results(stability_scores, expressivity_scores, compositionality_scores, args.generations, replicates)
+
 
 
 if __name__ == "__main__":
