@@ -1,7 +1,6 @@
 import random
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -9,9 +8,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset, random_split
 import os
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 class VAE(nn.Module):
     def __init__(self, hid1, lat_dim):
@@ -26,25 +23,29 @@ class VAE(nn.Module):
             nn.ReLU(),
             nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),  # 16x16 -> 8x8
             nn.ReLU(),
-            nn.Flatten(),
+            nn.Flatten(),  # (128, 8, 8) = 8192
             nn.Linear(8 * 8 * 128, hid1),
             nn.ReLU(),
-            nn.Linear(hid1, lat_dim * 2),
+            nn.Linear(hid1, 256),
+            nn.ReLU(),
+            nn.Linear(256, lat_dim * 2),
         )
 
         # Decoder
         self.s2m = nn.Sequential(
-            nn.Linear(lat_dim, hid1),
+            nn.Linear(lat_dim, 256),
             nn.ReLU(),
-            nn.Linear(hid1, 8 * 8 * 128),
+            nn.Linear(256, hid1),
             nn.ReLU(),
-            nn.Unflatten(1, (128, 8, 8)),
-            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),  # 8x8 -> 16x16
+            nn.Linear(hid1, 8 * 8 * 128),  # Matches encoder's last feature map size
             nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),  # 16x16 -> 32x32
+            nn.Unflatten(1, (128, 8, 8)),  # (batch, channels, height, width)
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),  # 8x8 → 16x16
             nn.ReLU(),
-            nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),  # 32x32 -> 64x64
-            nn.Sigmoid()  # Added sigmoid for pixel values between 0 and 1
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),  # 16x16 → 32x32
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 1, kernel_size=4, stride=2, padding=1),  # 32x32 → 64x64
+            nn.Sigmoid()
         )
 
     def encode(self, x):
@@ -53,7 +54,7 @@ class VAE(nn.Module):
         return mean, logvar
 
     def reparameterise(self, mean, logvar):
-        logvar = torch.clamp(logvar, min=-10, max=10)
+        logvar = torch.clamp(logvar, min=-4, max=4)
         std = torch.exp(0.5 * logvar)
         epsilon = torch.randn_like(std)
         sample = mean + std * epsilon
@@ -69,11 +70,21 @@ class VAE(nn.Module):
         return reconst, mean, logvar
 
 
-def loss_function(recon_x, x, mean, logvar, kl_weight):
+
+def loss_function(recon_x, x, mean, logvar, lat_dim, beta):
     recon_loss = nn.MSELoss()(recon_x, x)
-    kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-    kl_loss /= recon_x.shape[0]
-    return recon_loss + kl_weight * kl_loss
+    kl_loss = -0.5 * torch.mean(1 + logvar - mean.pow(2) - logvar.exp())
+    kl_loss = kl_loss / (recon_x.shape[0] * lat_dim)
+    print(
+        f"Loss components: recon_loss = {recon_loss.item():.6f}, kl_loss = {kl_loss.item():.6f}")
+    # print(
+    #     f"mean: mean={mean.mean().item():.4f}, std={mean.std().item():.4f}, "
+    #     f"logvar: mean={logvar.mean().item():.4f}, std={logvar.std().item():.4f}")
+
+    print(f"logvar: min={logvar.min().item():.4f}, max={logvar.max().item():.4f}")
+    # print(f"Loss components: recon_loss = {recon_loss.item():.6f}, kl_loss = {kl_loss.item():.6f}")
+
+    return recon_loss + beta * kl_loss
 
 
 
@@ -95,23 +106,22 @@ def generate_meaning_space(shape, orientation, scale):
         mask &= np.isin(latents_classes[:, 2], scale)
 
     filtered_imgs = imgs[mask]
-    filtered_latents = latents_classes[mask]
+    # filtered_latents = latents_classes[mask]
     print(f"Filtered images: {filtered_imgs.shape}")
 
-    # Convert to torch tensors
     return [torch.tensor(img, dtype=torch.float32).unsqueeze(0) for img in filtered_imgs]
 
 
 
-def save_reconstructed_example(model, dataset, learning_rate):
-    output_dir = f"/user/home/fw22912/diss/output_refined/lr_{learning_rate}"
+def save_reconstructed_example(model, dataset, learning_rate, beta):
+    output_dir = f"/user/home/fw22912/diss/4constraint/lr_{beta}"
     os.makedirs(output_dir, exist_ok=True)
     model.eval()
     indices = random.sample(range(len(dataset)), 10)
     with torch.no_grad():
         for idx in indices:
             img = dataset[idx].unsqueeze(0).float().to(device)
-            recon, _, _ = model(img)  # Now correctly unpacking three return values
+            recon, _, _ = model(img)
             orig = img.squeeze().cpu().numpy()
             recon = recon.squeeze().cpu().numpy()
 
@@ -129,25 +139,21 @@ def save_reconstructed_example(model, dataset, learning_rate):
             print(f"Saved reconstructed image to {save_path}")
 
 
-def train_vae(images, learning_rate):
+def train_vae(images, learning_rate, target_beta, lat_dim):
     # Prepare dataset
     images_tensor = torch.stack(images)
     dataset = TensorDataset(images_tensor)
-    print("Successfully loaded dataset...")
+
     train_size = int(0.8 * len(dataset))
     test_size = len(dataset) - train_size
     train_set, test_set = random_split(dataset, [train_size, test_size])
-    print(f"Training set size: {len(train_set)}")
-    print(f"Testing set size: {len(test_set)}")
 
-    train_loader = DataLoader(train_set, batch_size=64, shuffle=True)
-    print("Training dataset loading complete!")
-    test_loader = DataLoader(test_set, batch_size=64, shuffle=False)
-    print("Testing dataset loading complete!")
+    train_loader = DataLoader(train_set, batch_size=1, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
 
     # Create model
-    model = VAE(hid1=128, lat_dim=15)
-    print("Successfully created a VAE model...")
+    model = VAE(hid1=256, lat_dim=5)
+
     if torch.cuda.device_count() > 1:
         print(f"Using {torch.cuda.device_count()} GPUs!")
         model = nn.DataParallel(model)
@@ -158,24 +164,23 @@ def train_vae(images, learning_rate):
     train_loss_history = []
     test_loss_history = []
 
-    for epoch in range(150):
+    for epoch in range(50):
         model.train()
         total_train_loss = 0
-        kl_weight = min(1.0, epoch / 50)  # gradually increase from 0 → 1 over 50 epochs
+
+        max_beta = 1e-2
+        warmup_epochs = 40
+        beta = min(target_beta, epoch / warmup_epochs * target_beta)
 
         for batch in train_loader:
+            print(f"--------------------------------Epoch {epoch}/200--------------------------------")
             x = batch[0].to(device)
             optimizer.zero_grad()
+            recon, mean, logvar = model(x)
 
-            # Corrected forward pass
-            if isinstance(model, nn.DataParallel):
-                recon, mean, logvar = model(x)
-            else:
-                recon, mean, logvar = model(x)
-
-            print(f"Batch {epoch} recon range: {recon.min().item():.4f}-{recon.max().item():.4f}")
-            loss = loss_function(recon, x, mean, logvar, kl_weight)
+            loss = loss_function(recon, x, mean, logvar, lat_dim, beta)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             total_train_loss += loss.item()
@@ -185,21 +190,32 @@ def train_vae(images, learning_rate):
 
         model.eval()
         total_test_loss = 0
+
         with torch.no_grad():
             for batch in test_loader:
                 x = batch[0].to(device)
                 recon, mean, logvar = model(x)
-                # Corrected parameter names
-                loss = loss_function(recon, x, mean, logvar, kl_weight)
+                loss = loss_function(recon, x, mean, logvar, lat_dim, beta)
                 total_test_loss += loss.item()
 
         avg_test_loss = total_test_loss / len(test_loader)
         test_loss_history.append(avg_test_loss)
+        print(f"Epoch {epoch + 1}/80 - Test Loss: {avg_test_loss:.4f}")
 
-        print(f"Epoch {epoch + 1}/20 - Train Loss: {avg_train_loss:.4f} | Test Loss: {avg_test_loss:.4f}")
+
+        # Log gradient norms
+        model.eval()
+        total_norm = 0
+        for p in model.parameters():
+            if p.grad is not None:
+                total_norm += p.grad.data.norm(2).item() ** 2
+        total_norm = total_norm ** 0.5
+        print(f"[Epoch {epoch}] Gradient norm: {total_norm:.4f}")
+
+        # No extra optimizer.step() outside the batch loop
 
     # Rest of the code for plotting and saving reconstructions...
-    output_dir = f"/user/home/fw22912/diss/output_refined/lr_{learning_rate}"
+    output_dir = f"/user/home/fw22912/diss/4constraint/lr_{beta}"
     os.makedirs(output_dir, exist_ok=True)
 
     # Plot train loss
@@ -226,14 +242,15 @@ def train_vae(images, learning_rate):
 
     test_images = [test_set[i][0] for i in range(10)]
     test_tensor = torch.stack(test_images)
-    save_reconstructed_example(model, test_tensor, learning_rate)
+    save_reconstructed_example(model, test_tensor, learning_rate, beta)
 
 if __name__ == '__main__':
-    shape = [1, 2]
-    orientation = [10, 19, 29, 39]
-    scale = [0, 1, 3, 5]
+    shape = [1]
+    orientation = [10, 19]
+    scale = [0, 1]
+    lat_dim = 5
     all_meanings = generate_meaning_space(shape=shape, orientation=orientation, scale=scale)
 
-    for lr in [5e-5, 5e-4, 1e-5]:
-        print(f"\nTraining with learning rate: {lr}")
-        train_vae(all_meanings, learning_rate=lr)
+    for beta in [1e-3]:
+        print(f"\nTraining with beta rate: {beta}")
+        train_vae(all_meanings, learning_rate=1e-5, target_beta=beta, lat_dim=lat_dim)

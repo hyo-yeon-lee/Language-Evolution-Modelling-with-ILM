@@ -160,6 +160,7 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, etrain):
 
     T = gen_supervised_data(tutor, all_meanings)
     A = gen_unsupervised_data(all_meanings, A_size)
+    # print(T[0].shape)
 
     m2mtraining = 0
     for epoch in range(epochs):
