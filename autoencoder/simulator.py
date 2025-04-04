@@ -8,25 +8,24 @@ from matplotlib import pyplot as plt
 class Agent:
     def __init__(self, bitN, m2s, s2m, i):
         self.bitN = bitN
-        self.m2s = m2s  # Encoder- meaning → signal
-        self.s2m = s2m  # Decoder - sibgnal → meaning
-        self.m2m = nn.Sequential(m2s, s2m)  # Autoencoder
+        self.m2s = m2s
+        self.s2m = s2m
+        self.m2m = nn.Sequential(m2s, s2m)
         self.num = i
 
 
-#check how the weights are randomly initialised (check the range) -> -0.3 ~ 0.3
 def create_agent(bitN, nodeN, i):
     m2s = nn.Sequential(
-        nn.Linear(bitN, nodeN),  # meaning → hidden
-        nn.Sigmoid(),  #activation
-        nn.Linear(nodeN, bitN),  # hidden → signal
+        nn.Linear(bitN, nodeN),
+        nn.Sigmoid(),
+        nn.Linear(nodeN, bitN),
         nn.Sigmoid()
     )
 
     s2m = nn.Sequential(
-        nn.Linear(bitN, nodeN), # signal->hidden
+        nn.Linear(bitN, nodeN),
         nn.Sigmoid(),
-        nn.Linear(nodeN, bitN), # hidden -> meaning
+        nn.Linear(nodeN, bitN),
         nn.Sigmoid()
     )
     return Agent(bitN, m2s, s2m, i)
@@ -56,22 +55,10 @@ def gen_unsupervised_data(all_meanings, A_size):
     return U
 
 
-# def check_initial_weights(agent):
-#     print(f"Agent {agent.num} - Initial Weights Range:")
-#
-#     for name, param in agent.m2s.named_parameters():
-#         if "weight" in name:  # Only check weight tensors (not biases)
-#             print(f"  m2s {name} → min: {param.min().item()}, max: {param.max().item()}")
-#
-#     for name, param in agent.s2m.named_parameters():
-#         if "weight" in name:
-#             print(f"  s2m {name} → min: {param.min().item()}, max: {param.max().item()}")
-
-
 def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
     optimiser_m2s = torch.optim.SGD(agent.m2s.parameters(), lr=5.0)
     optimiser_s2m = torch.optim.SGD(agent.s2m.parameters(), lr=5.0)
-    optimiser_m2m = torch.optim.SGD(list(agent.m2s.parameters()) + list(agent.s2m.parameters()), lr=5.0) # check if I'm using the optimiser c
+    optimiser_m2m = torch.optim.SGD(list(agent.m2s.parameters()) + list(agent.s2m.parameters()), lr=5.0)
 
     loss_function = nn.MSELoss()
 
@@ -81,7 +68,6 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs):
     m2mtraining = 0
 
     for epoch in range(epochs):
-        print(f"\n===== Epoch {epoch + 1}/{epochs} =====")
         B1 = [random.choice(T) for _ in range(B_size)]
         B2 = B1.copy()
         random.shuffle(B2)
@@ -134,7 +120,6 @@ def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epo
 
     for gen in range(1, generations + 1):
         pupil = create_agent(bitN, nodeN, gen)
-        # Train using separate A and B sets
         train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs)
 
         stability_scores.append(stability(tutor, pupil, all_meanings))
@@ -142,7 +127,6 @@ def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epo
         compositionality_scores.append(compositionality(pupil, all_meanings))
 
         tutor = pupil
-        # print(f"Tutor gen: {tutor.num}")
 
     return stability_scores, expressivity_scores, compositionality_scores
 
@@ -152,11 +136,10 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
     plt.figure(figsize=(15, 5))
     gens = np.arange(1, generations + 1)
 
-    # Define colors
     colors = {'stability': 'purple', 'expressivity': 'blue', 'compositionality': 'orange',
-        's': (0.5, 0.0, 0.5, 0.1),  # Light purple (RGBA with low alpha)
-        'x': (0.0, 0.0, 1.0, 0.1),  # Light blue
-        'c': (1.0, 0.65, 0.0, 0.1)  # Light orange
+        's': (0.5, 0.0, 0.5, 0.1),
+        'x': (0.0, 0.0, 1.0, 0.1),
+        'c': (1.0, 0.65, 0.0, 0.1)
     }
 
     # Stability Plot
@@ -166,7 +149,6 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
     plt.plot(gens, np.mean(stability_scores, axis=0), color=colors['stability'], linewidth=3)
     plt.xlabel("Generations", fontsize=12)
     plt.ylabel("s", fontsize=12)
-    # plt.title("Stability Over Generations", fontsize=14)
     plt.show()
 
     # Expressivity Plot
@@ -176,7 +158,6 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
     plt.plot(gens, np.mean(expressivity_scores, axis=0), color=colors['expressivity'], linewidth=3)
     plt.xlabel("Generations", fontsize=12)
     plt.ylabel("x", fontsize=12)
-    # plt.title("Expressivity Over Generations", fontsize=14)
     plt.show()
 
     # Compositionality Plot
@@ -186,7 +167,6 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
     plt.plot(gens, np.mean(compositionality_scores, axis=0), color=colors['compositionality'], linewidth=3)
     plt.xlabel("Generations", fontsize=12)
     plt.ylabel("c", fontsize=12)
-    # plt.title("Compositionality Over Generations", fontsize=14)
     plt.show()
 
 
@@ -240,7 +220,6 @@ def compositionality(agent, all_meanings):
     num_messages = 2 ** n
     cnt = 0
 
-    # Initialise matrices
     meaning_matrix = np.zeros((n, num_messages), dtype=int)
     signal_matrix = np.zeros((n, num_messages), dtype=int)
 
@@ -250,7 +229,6 @@ def compositionality(agent, all_meanings):
         signal_matrix[:, cnt] = s
         cnt += 1
 
-
     entropy = [[] for _ in range(n)]
 
     for m_col in range(n):
@@ -259,10 +237,8 @@ def compositionality(agent, all_meanings):
             p = np.sum(meaning_matrix[m_col, :] * signal_matrix[signal_col, :]) / (2 ** (n - 1))
             curr_col_entropy[signal_col] = calculate_entropy(p)
 
-    # finding minimum entropy
         min_index = np.argmin(curr_col_entropy)
         min_val = curr_col_entropy[min_index]
-
         entropy[min_index].append(min_val)
 
     entropy_sum = sum(min(vals) if vals else 1 for vals in entropy)
@@ -279,7 +255,6 @@ def main():
     compositionality_scores = []
 
     for i in range(replicates):
-        print(f"============================================{i}============================================")
         stability, expressivity, compositionality = iterated_learning(generations=generations)
         stability_scores.append(stability)
         expressivity_scores.append(expressivity)
@@ -290,5 +265,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # stability_scores, expressivity_scores, compositionality_scores = iterated_learning()
-    # plot_results(stability_scores, expressivity_scores, compositionality_scores, 20)
