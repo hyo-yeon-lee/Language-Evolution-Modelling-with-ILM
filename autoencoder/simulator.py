@@ -1,3 +1,4 @@
+import os
 import random
 import numpy as np
 import torch
@@ -119,6 +120,7 @@ def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epo
     all_meanings = generate_meaning_space(bitN)
 
     for gen in range(1, generations + 1):
+        print(f"generation: {gen}")
         pupil = create_agent(bitN, nodeN, gen)
         train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs)
 
@@ -132,9 +134,14 @@ def iterated_learning(generations=20, bitN=8, nodeN=8, A_size=75, B_size=75, epo
 
 
 
-def plot_results(stability_scores, expressivity_scores, compositionality_scores, generations, replicates=25):
+def plot_results(stability_scores, expressivity_scores, compositionality_scores, generations):
     plt.figure(figsize=(15, 5))
     gens = np.arange(1, generations + 1)
+
+    save_path = "your_path"
+
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
 
     colors = {'stability': 'purple', 'expressivity': 'blue', 'compositionality': 'orange',
         's': (0.5, 0.0, 0.5, 0.1),
@@ -146,29 +153,44 @@ def plot_results(stability_scores, expressivity_scores, compositionality_scores,
     plt.figure(figsize=(6, 4))
     for rep in stability_scores:
         plt.plot(gens, rep, color=colors['s'], alpha=0.2)
-    plt.plot(gens, np.mean(stability_scores, axis=0), color=colors['stability'], linewidth=3)
-    plt.xlabel("Generations", fontsize=12)
-    plt.ylabel("s", fontsize=12)
-    plt.show()
+    plt.plot(gens, np.mean(stability_scores, axis=0), color=colors['stability'], linewidth=4)
+    plt.xlabel("Generations", fontsize=13)
+    plt.ylabel("s", fontsize=14)
+    # plt.show()
+
+    if save_path is not None:
+        stability_file = os.path.join(save_path, "stability.png")
+        plt.savefig(stability_file, dpi=300)
+    # plt.show()
 
     # Expressivity Plot
     plt.figure(figsize=(6, 4))
     for rep in expressivity_scores:
         plt.plot(gens, rep, color=colors['x'], alpha=0.2)
-    plt.plot(gens, np.mean(expressivity_scores, axis=0), color=colors['expressivity'], linewidth=3)
-    plt.xlabel("Generations", fontsize=12)
-    plt.ylabel("x", fontsize=12)
-    plt.show()
+    plt.plot(gens, np.mean(expressivity_scores, axis=0), color=colors['expressivity'], linewidth=4)
+    plt.xlabel("Generations", fontsize=13)
+    plt.ylabel("x", fontsize=14)
+    # plt.show()
+
+    if save_path is not None:
+        expressivity_file = os.path.join(save_path, "expressivity.png")
+        plt.savefig(expressivity_file, dpi=300)
+    # plt.show()
+
 
     # Compositionality Plot
     plt.figure(figsize=(6, 4))
     for rep in compositionality_scores:
         plt.plot(gens, rep, color=colors['c'], alpha=0.2)
-    plt.plot(gens, np.mean(compositionality_scores, axis=0), color=colors['compositionality'], linewidth=3)
-    plt.xlabel("Generations", fontsize=12)
-    plt.ylabel("c", fontsize=12)
-    plt.show()
+    plt.plot(gens, np.mean(compositionality_scores, axis=0), color=colors['compositionality'], linewidth=4)
+    plt.xlabel("Generations", fontsize=13)
+    plt.ylabel("c", fontsize=14)
+    # plt.show()
 
+    if save_path is not None:
+        compositionality_file = os.path.join(save_path, "compositionality.png")
+        plt.savefig(compositionality_file, dpi=300)
+    # plt.show()
 
 
 
@@ -195,6 +217,7 @@ def stability(tutor, pupil, all_meanings):
     return stability_score
 
 
+
 def expressivity(agent, all_meanings):
     agent.m2s.eval()
     unique_signals = set()
@@ -209,41 +232,59 @@ def expressivity(agent, all_meanings):
 
 
 def calculate_entropy(p):
-    if p == 0 or p == 1:
-        return 0
-    else:
-        return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
+    if p <= 0 or p >= 1:
+        return 0.0
+    return -p * np.log2(p) - (1 - p) * np.log2(1 - p)
 
 
 def compositionality(agent, all_meanings):
     n = agent.bitN
     num_messages = 2 ** n
-    cnt = 0
 
     meaning_matrix = np.zeros((n, num_messages), dtype=int)
     signal_matrix = np.zeros((n, num_messages), dtype=int)
 
+    cnt = 0
+
     for m in all_meanings:
         s = agent.m2s(m.unsqueeze(0)).detach().round().squeeze(0)
-        meaning_matrix[:, cnt] = m
-        signal_matrix[:, cnt] = s
+        meaning_matrix[:, cnt] = m.numpy()
+        signal_matrix[:, cnt] = s.numpy()
         cnt += 1
 
-    entropy = [[] for _ in range(n)]
+    #  minimal entropy calculation
+    fact_min_entropies = np.zeros(n)  # h_i for each fact i
+    fact_best_word = np.zeros(n, dtype=int)  # j index that minimizes h_ij for fact i
 
-    for m_col in range(n):
-        curr_col_entropy = np.ones(n)
-        for signal_col in range(n):
-            p = np.sum(meaning_matrix[m_col, :] * signal_matrix[signal_col, :]) / (2 ** (n - 1))
-            curr_col_entropy[signal_col] = calculate_entropy(p)
+    for i in range(n):
+        min_entropy = np.inf
+        best_j = -1
+        for j in range(n):
+            p = np.sum(meaning_matrix[i, :] * signal_matrix[j, :]) / 2 ** (n - 1)
+            h_ij = calculate_entropy(p)
 
-        min_index = np.argmin(curr_col_entropy)
-        min_val = curr_col_entropy[min_index]
-        entropy[min_index].append(min_val)
+            if h_ij < min_entropy:
+                min_entropy = h_ij
+                best_j = j
+        fact_min_entropies[i] = min_entropy
+        fact_best_word[i] = best_j
 
-    entropy_sum = sum(min(vals) if vals else 1 for vals in entropy)
+    # Collision resolution
+    adjusted_entropies = fact_min_entropies.copy()
+    for j in range(n):
+        facts_using_j = np.where(fact_best_word == j)[0]
+        if len(facts_using_j) > 1:
+            best_fact = facts_using_j[np.argmin(fact_min_entropies[facts_using_j])]
 
-    return 1 - entropy_sum / n
+            for idx in facts_using_j: #penalyt
+                if idx != best_fact:
+                    adjusted_entropies[idx] = 1.0
+
+    # compute compositionality score
+    average_adjusted_entropy = np.mean(adjusted_entropies)
+    compositionality_score = 1 - average_adjusted_entropy
+
+    return compositionality_score
 
 
 def main():
@@ -255,12 +296,13 @@ def main():
     compositionality_scores = []
 
     for i in range(replicates):
+        print(f"Replicates: {i}")
         stability, expressivity, compositionality = iterated_learning(generations=generations)
         stability_scores.append(stability)
         expressivity_scores.append(expressivity)
         compositionality_scores.append(compositionality)
 
-    plot_results(stability_scores, expressivity_scores, compositionality_scores, generations, replicates)
+    plot_results(stability_scores, expressivity_scores, compositionality_scores, generations)
 
 
 if __name__ == "__main__":

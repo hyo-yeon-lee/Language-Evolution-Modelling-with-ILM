@@ -91,6 +91,7 @@ def create_agent(hid1, lat_dim, i):
 def generate_meaning_space(shape, orientation, scale):
     dataset_zip = np.load(
         '/user/home/fw22912/diss/dsprites-dataset-master/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz',
+        # '/Users/hyoyeon/Desktop/UNI/Year 3/Individual Project/Language-Evolution-Modelling-with-ILM/dsprites-dataset-master/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz',
         allow_pickle=True, encoding='latin1'
     )
     imgs = dataset_zip['imgs']
@@ -107,7 +108,7 @@ def generate_meaning_space(shape, orientation, scale):
 
     filtered_imgs = imgs[mask]
     filtered_latents = latents_classes[mask]
-    print(f"Filtered images: {filtered_imgs.shape}")
+    # print(f"Filtered images: {filtered_imgs.shape}")
 
     meta_testset = [
         (int(latent[1]), int(latent[3]), int(latent[2]), torch.tensor(img, dtype=torch.float32).unsqueeze(0))
@@ -150,7 +151,7 @@ def loss_function(recon_x, x, mean, logvar, lat_dim, beta):
 
 
 
-def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, beta):
+def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, beta, gen):
     print("Starting training...")
     optimiser_m2s = torch.optim.Adam(agent.m2s.parameters(), lr=1e-4)
     optimiser_s2m = torch.optim.Adam(agent.s2m.parameters(), lr=1e-4)
@@ -160,12 +161,12 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, beta):
     A = gen_unsupervised_data(all_meanings, A_size)
 
     for epoch in range(epochs):
-        print(f"\n========================== Epoch {epoch + 1}/{epochs}==========================")
+        print(f"\n==========================Gen: {gen}   Epoch {epoch + 1}/{epochs}==========================")
         B1 = [random.choice(T) for _ in range(B_size)]
         B2 = B1.copy()
         random.shuffle(B2)
 
-        print("Starting supervised training...")
+        # print("Starting supervised training...")
         for i in range(B_size):
             optimiser_m2s.zero_grad()
             m2s_meaning, m2s_signal = B1[i]
@@ -188,7 +189,7 @@ def train_combined(agent, tutor, A_size, B_size, all_meanings, epochs, beta):
 
             # unsupervised training
             meanings_u = [random.choice(A) for _ in range(20)]
-            print("Starting unsupervised training...")
+            # print("Starting unsupervised training...")
             for meaning in meanings_u:
                 # print(f"unsupervised training meaning shape: {meaning.shape}")
                 optimiser_m2m.zero_grad()
@@ -230,7 +231,7 @@ def random_test_sets(meta_dataset, sample_size):
 
 
 def iterated_learning(h_dim1, lat_dim, all_meanings, meta_testset, beta, generations=20,
-                      A_size=500, B_size=500, epochs=20, sample_size=250):
+                      A_size=300, B_size=300, epochs=20, sample_size=100):
     print("Entered iterated learning")
     tutor = create_agent(h_dim1, lat_dim, 1)
 
@@ -242,13 +243,34 @@ def iterated_learning(h_dim1, lat_dim, all_meanings, meta_testset, beta, generat
         print(f"================================================{gen}th GENERATION================================================")
         test_data = random_test_sets(meta_testset, sample_size)
         pupil = create_agent(h_dim1, lat_dim, gen)
-        train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs, beta)
+        train_combined(pupil, tutor, A_size, B_size, all_meanings, epochs, beta, gen)
 
         stability_scores.append(stability(tutor, pupil, test_data))
         # expressivity_scores.append(expressivity(pupil, test_data))
         # compositionality_scores.append(compositionality(pupil, test_data))
 
         tutor = pupil
+
+    # === Save original and reconstructed images from final agent ===
+    print("\nSaving reconstructions from final agent...")
+
+    save_dir = "/user/home/fw22912/diss/final_stability_reconst"
+    os.makedirs(save_dir, exist_ok=True)
+
+    final_agent = tutor  # last pupil
+    final_agent.vae.eval()
+
+    with torch.no_grad():
+        for idx, item in enumerate(meta_testset):
+            original = item[3].unsqueeze(0)  # shape: [1, 1, 64, 64]
+            reconstructed = final_agent.m2m(original)
+
+            # Combine side by side: [1, 1, 64, 64] → [1, 1, 64, 128]
+            combined = torch.cat([original, reconstructed], dim=3)
+
+            # Convert to numpy and save
+            image_np = combined.squeeze().cpu().numpy()  # shape: [64, 128]
+            plt.imsave(f"{save_dir}/comparison_{idx}.png", image_np, cmap='gray')
 
     return stability_scores, expressivity_scores, compositionality_scores
 
@@ -272,7 +294,7 @@ def plot_results(stability_scores, generations, replicates=25):
     plt.xlabel("Generations", fontsize=14)
     plt.ylabel("s", fontsize=14)
 
-    save_dir = "/user/home/fw22912/diss/stability/500"
+    save_dir = "/user/home/fw22912/diss/stability4020"
     os.makedirs(save_dir, exist_ok=True)
 
     filename = "stability.png"
@@ -313,12 +335,15 @@ def stability(tutor, pupil, all_meanings, mse_threshold=0.01):
     total_meanings = len(all_meanings)
 
     with torch.no_grad():
-        for meaning in all_meanings:
-            tut_mu, tut_logvar = tutor.vae.encode(meaning)
-            tut_signal = tutor.vae.reparameterise(tut_mu, tut_logvar)
-            pupil_s2m_mn = pupil.decode(tut_signal)
+        for item in all_meanings:
+            meaning_tensor = item[3].unsqueeze(0)
+            # print(f"meaning shape: {meaning_tensor.shape}")
 
-            loss = nn.MSELoss()(meaning, pupil_s2m_mn)
+            tut_mu, tut_logvar = tutor.vae.encode(meaning_tensor)
+            tut_signal = tutor.vae.reparameterise(tut_mu, tut_logvar)
+            pupil_s2m_mn = pupil.vae.decode(tut_signal)  # Note: calling decode on tutor's signal
+
+            loss = nn.MSELoss()(meaning_tensor, pupil_s2m_mn)
 
             if loss < mse_threshold:
                 matches += 1
@@ -326,6 +351,7 @@ def stability(tutor, pupil, all_meanings, mse_threshold=0.01):
     stability_score = matches / total_meanings
     print(f"stability score: {stability_score}")
     return stability_score
+
 
 
 
@@ -398,6 +424,7 @@ def main():
     generations = 20
     replicates = 1
 
+    print("Starting iteration...")
     stability_scores = []
     # expressivity_scores = []
     # compositionality_scores = []
